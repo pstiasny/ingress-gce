@@ -1,0 +1,28 @@
+name: Territory upload
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  upload-to-territory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # The Go scanner runs via `go run`, so Go must be on PATH.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go mod download
+
+      - name: Upload to Territory
+        uses: territory-dev/cli@action-prototype
+        with:
+          repo-id: KUelk705nuGLDf6LPJjA
+          lang: go
+          upload-token: ${{ secrets.TERRITORY_UPLOAD_TOKEN }}

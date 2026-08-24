@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	nodetopologyv1 "github.com/GoogleCloudPlatform/gke-networking-api/apis/nodetopology/v1"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud"
@@ -41,11 +42,33 @@ import (
 	"k8s.io/ingress-gce/pkg/neg/metrics"
 	"k8s.io/ingress-gce/pkg/neg/syncers/labels"
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
+	"k8s.io/ingress-gce/pkg/neg/types/shared"
 	"k8s.io/ingress-gce/pkg/network"
 	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/ingress-gce/pkg/utils/zonegetter"
 	"k8s.io/klog/v2"
 )
+
+type fakeNEGStatusHandler struct {
+	zones shared.ZonesPerSubnetMap
+	err   error
+}
+
+func (f *fakeNEGStatusHandler) ReportSyncStatus(syncErr error) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeNEGStatusHandler) ReportStatus(negs []*composite.NetworkEndpointGroup, errList []error) error {
+	return nil
+}
+
+func (f *fakeNEGStatusHandler) SubnetToZonesMap() (shared.ZonesPerSubnetMap, error) {
+	return f.zones, f.err
+}
+
+func (f *fakeNEGStatusHandler) LastSyncTime() (time.Time, error) {
+	return time.Time{}, nil
+}
 
 const (
 	defaultTestSubnetURL          = "https://www.googleapis.com/compute/v1/projects/mock-project/regions/test-region/subnetworks/default"
@@ -428,20 +451,26 @@ func TestEnsureNetworkEndpointGroup(t *testing.T) {
 				tc.networkInfo.NetworkURL = fakeCloud.NetworkURL()
 				tc.networkInfo.SubnetworkURL = fakeCloud.SubnetworkURL()
 			}
+			expectedNegDesc := utils.StandardNEGDescription{
+				ClusterUID:  testKubesystemUID,
+				Namespace:   testServiceNameSpace,
+				ServiceName: testServiceName,
+				Port:        testPort,
+			}
 			_, err := ensureNetworkEndpointGroup(
 				testServiceNameSpace,
 				testServiceName,
 				tc.negName,
 				testZone,
 				testNamedPort,
-				testKubesystemUID,
-				testPort,
+				expectedNegDesc,
 				tc.networkEndpointType,
 				fakeCloud,
 				nil,
 				nil,
 				tc.apiVersion,
 				false,
+				true,
 				tc.networkInfo,
 				klog.TODO(),
 				metrics.NewNegMetrics(),
@@ -470,14 +499,7 @@ func TestEnsureNetworkEndpointGroup(t *testing.T) {
 				t.Errorf("Unexpected Network, expecting %q but got %q", tc.expectedNetwork, neg.Network)
 			}
 
-			expectedNegDesc := utils.NegDescription{
-				ClusterUID:  testKubesystemUID,
-				Namespace:   testServiceNamespace,
-				ServiceName: testServiceName,
-				Port:        testPort,
-			}
-
-			actualNegDesc, err := utils.NegDescriptionFromString(neg.Description)
+			actualNegDesc, err := utils.NEGDescriptionFromString[utils.StandardNEGDescription](neg.Description)
 			if err != nil {
 				t.Errorf("Invalid neg description: %s", err)
 			}
@@ -493,14 +515,14 @@ func TestEnsureNetworkEndpointGroup(t *testing.T) {
 				tc.negName,
 				testZone,
 				testNamedPort,
-				testKubesystemUID,
-				testPort,
+				expectedNegDesc,
 				tc.networkEndpointType,
 				fakeCloud,
 				nil,
 				nil,
 				tc.apiVersion,
 				false,
+				true,
 				tc.networkInfo,
 				klog.TODO(),
 				metrics.NewNegMetrics(),
@@ -861,6 +883,7 @@ func TestRetrieveExistingZoneNetworkEndpointMap(t *testing.T) {
 		expect              map[negtypes.NEGLocation]negtypes.NetworkEndpointSet
 		expectAnnotationMap labels.EndpointPodLabelMap
 		expectErr           bool
+		ensuredSubnetZones  map[string]sets.Set[string]
 	}{
 		{
 			desc:               "neg does not exist",
@@ -1391,14 +1414,65 @@ func TestRetrieveExistingZoneNetworkEndpointMap(t *testing.T) {
 				cloud.DeleteNetworkEndpointGroup(testNegName, negtypes.TestZone2, meta.VersionGA, klog.TODO())
 			},
 			subnetToNegMapping: mappingWithDefaultSubnetOnly,
-			expectErr:          true,
+			ensuredSubnetZones: map[string]sets.Set[string]{
+				defaultTestSubnet: sets.New(negtypes.TestZone1, negtypes.TestZone2, negtypes.TestZone3, negtypes.TestZone4),
+			},
+			expectErr: true,
+		},
+		{
+			desc: "limit locations to zone1 only, ignore missing NEG in zone2",
+			mutate: func(cloud negtypes.NetworkEndpointGroupCloud) {
+				cloud.DeleteNetworkEndpointGroup(testNegName, negtypes.TestZone3, meta.VersionGA, klog.TODO())
+				cloud.DeleteNetworkEndpointGroup(testNegName, negtypes.TestZone4, meta.VersionGA, klog.TODO())
+			},
+			subnetToNegMapping: mappingWithDefaultSubnetOnly,
+			ensuredSubnetZones: map[string]sets.Set[string]{
+				defaultTestSubnet: sets.New(negtypes.TestZone1),
+			},
+			expect: map[negtypes.NEGLocation]negtypes.NetworkEndpointSet{
+				{Zone: negtypes.TestZone1, Subnet: defaultTestSubnet}: negtypes.NewNetworkEndpointSet(
+					endpoint1,
+					endpoint2,
+				),
+			},
+			expectAnnotationMap: labels.EndpointPodLabelMap{
+				endpoint1: labels.PodLabelMap{
+					"foo": "bar",
+				},
+				endpoint2: labels.PodLabelMap{
+					"foo": "bar",
+				},
+			},
+			expectErr: false,
+		},
+		{
+			desc: "empty non-nil locations returns empty map",
+			mutate: func(cloud negtypes.NetworkEndpointGroupCloud) {
+				cloud.DeleteNetworkEndpointGroup(testNegName, negtypes.TestZone1, meta.VersionGA, klog.TODO())
+			},
+			subnetToNegMapping:  mappingWithDefaultSubnetOnly,
+			ensuredSubnetZones:  map[string]sets.Set[string]{},
+			expect:              map[negtypes.NEGLocation]negtypes.NetworkEndpointSet{},
+			expectAnnotationMap: labels.EndpointPodLabelMap{},
+			expectErr:           false,
 		},
 	}
 
 	for _, tc := range testCases {
 		tc.mutate(negCloud)
+
 		// tc.mode of "" will result in the default node predicate being selected, which is ok for this test.
-		endpointSets, annotationMap, _, err := retrieveExistingZoneNetworkEndpointMap(tc.subnetToNegMapping, zoneGetter, negCloud, meta.VersionGA, tc.mode, tc.enableDualStackNEG, klog.TODO(), metrics.NewNegMetrics(), false, false)
+		defaultNetInfo := network.NetworkInfo{IsDefault: true, SubnetworkURL: defaultTestSubnetURL}
+
+		ensuredSubnetZones := tc.ensuredSubnetZones
+		if ensuredSubnetZones == nil {
+			var err error
+			ensuredSubnetZones, err = zoneGetter.ListZonesPerSubnet(negtypes.NodeFilterForEndpointCalculatorMode(tc.mode, false), defaultNetInfo, klog.TODO())
+			if err != nil {
+				t.Fatalf("failed to list zones for test case %q: %v", tc.desc, err)
+			}
+		}
+		endpointSets, annotationMap, _, err := retrieveExistingZoneNetworkEndpointMap(tc.subnetToNegMapping, zoneGetter, &fakeNEGStatusHandler{}, ensuredSubnetZones, negCloud, meta.VersionGA, tc.enableDualStackNEG, defaultNetInfo, klog.TODO(), metrics.NewNegMetrics(), false)
 
 		if tc.expectErr {
 			if err == nil {
@@ -1570,8 +1644,13 @@ func TestRetrieveExistingZoneNetworkEndpointMapHealth(t *testing.T) {
 			}
 
 			subnetToNegMapping := map[string]string{defaultTestSubnet: negName}
+			defaultNetInfo := network.NetworkInfo{IsDefault: true, SubnetworkURL: defaultTestSubnetURL}
 
-			endpointSets, _, drainingEndpoints, err := retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, fakeCloud, meta.VersionGA, negtypes.L4LocalMode, false, klog.TODO(), metrics.NewNegMetrics(), tc.useHealthStatus, false)
+			ensuredZonesPerSubnet, err := zoneGetter.ListZonesPerSubnet(negtypes.NodeFilterForEndpointCalculatorMode(negtypes.L4LocalMode, false), defaultNetInfo, klog.TODO())
+			if err != nil {
+				t.Fatalf("failed to list zones: %v", err)
+			}
+			endpointSets, _, drainingEndpoints, err := retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, &fakeNEGStatusHandler{}, ensuredZonesPerSubnet, fakeCloud, meta.VersionGA, false, defaultNetInfo, klog.TODO(), metrics.NewNegMetrics(), tc.useHealthStatus)
 			if err != nil {
 				t.Fatalf("retrieveExistingZoneNetworkEndpointMap: %v", err)
 			}
@@ -1647,9 +1726,14 @@ func TestRetrieveExistingZoneNetworkEndpointMapWithDrainNodes(t *testing.T) {
 		fakeCloud.CreateNetworkEndpointGroup(&composite.NetworkEndpointGroup{Name: negName, Zone: zone, Version: meta.VersionGA}, zone, klog.TODO())
 	}
 
+	defaultNetInfo := network.NetworkInfo{IsDefault: true, SubnetworkURL: defaultTestSubnetURL}
 	// With includeDrainNodesL4Local=false: zone4 has no NEG but is not a
 	// candidate zone, so the NotFound is suppressed and no error is returned.
-	_, _, _, err = retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, fakeCloud, meta.VersionGA, negtypes.L4LocalMode, false, klog.TODO(), metrics.NewNegMetrics(), false, false)
+	ensuredZonesNoDrain, err := zoneGetter.ListZonesPerSubnet(negtypes.NodeFilterForEndpointCalculatorMode(negtypes.L4LocalMode, false), defaultNetInfo, klog.TODO())
+	if err != nil {
+		t.Fatalf("failed to list zones: %v", err)
+	}
+	_, _, _, err = retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, &fakeNEGStatusHandler{}, ensuredZonesNoDrain, fakeCloud, meta.VersionGA, false, defaultNetInfo, klog.TODO(), metrics.NewNegMetrics(), false)
 	if err != nil {
 		t.Errorf("expected no error with includeDrainNodesL4Local=false and missing zone4 NEG, got: %v", err)
 	}
@@ -1658,7 +1742,11 @@ func TestRetrieveExistingZoneNetworkEndpointMapWithDrainNodes(t *testing.T) {
 	// NEG yet. The NotFound is not suppressed, so an error is returned.
 	// This is the plausible race documented in the review: if ensureNetworkEndpointGroups
 	// silently failed for zone4, the subsequent retrieve would fail here.
-	_, _, _, err = retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, fakeCloud, meta.VersionGA, negtypes.L4LocalMode, false, klog.TODO(), metrics.NewNegMetrics(), false, true)
+	ensuredZonesWithDrain, err := zoneGetter.ListZonesPerSubnet(negtypes.NodeFilterForEndpointCalculatorMode(negtypes.L4LocalMode, true), defaultNetInfo, klog.TODO())
+	if err != nil {
+		t.Fatalf("failed to list zones: %v", err)
+	}
+	_, _, _, err = retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, &fakeNEGStatusHandler{}, ensuredZonesWithDrain, fakeCloud, meta.VersionGA, false, defaultNetInfo, klog.TODO(), metrics.NewNegMetrics(), false)
 	if err == nil {
 		t.Errorf("expected error with includeDrainNodesL4Local=true and missing zone4 NEG, got nil")
 	}
@@ -1668,7 +1756,7 @@ func TestRetrieveExistingZoneNetworkEndpointMapWithDrainNodes(t *testing.T) {
 	drainEndpoint := &composite.NetworkEndpoint{IpAddress: "10.0.4.1", Instance: "upgrade-instance1"}
 	fakeCloud.AttachNetworkEndpoints(negName, negtypes.TestZone4, []*composite.NetworkEndpoint{drainEndpoint}, meta.VersionGA, klog.TODO())
 
-	endpointSets, _, _, err := retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, fakeCloud, meta.VersionGA, negtypes.L4LocalMode, false, klog.TODO(), metrics.NewNegMetrics(), false, true)
+	endpointSets, _, _, err := retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, zoneGetter, &fakeNEGStatusHandler{}, ensuredZonesWithDrain, fakeCloud, meta.VersionGA, false, defaultNetInfo, klog.TODO(), metrics.NewNegMetrics(), false)
 	if err != nil {
 		t.Fatalf("retrieveExistingZoneNetworkEndpointMap(drain=true, NEG exists): %v", err)
 	}
@@ -1811,20 +1899,26 @@ func TestNameUniqueness(t *testing.T) {
 		}
 	)
 	fakeCloud := negtypes.NewFakeNetworkEndpointGroupCloud(testSubnetwork, testNetwork)
+	expectedNegDesc := utils.StandardNEGDescription{
+		ClusterUID:  testKubesystemUID,
+		Namespace:   testServiceNameSpace,
+		ServiceName: testServiceName,
+		Port:        testPort,
+	}
 	_, err := ensureNetworkEndpointGroup(
 		testServiceNameSpace,
 		testServiceName,
 		negName,
 		testZone,
 		testNamedPort,
-		testKubesystemUID,
-		testPort,
+		expectedNegDesc,
 		networkEndpointType,
 		fakeCloud,
 		nil,
 		nil,
 		apiVersion,
 		false,
+		true,
 		networkInfo,
 		klog.TODO(),
 		metrics.NewNegMetrics(),
@@ -1842,6 +1936,12 @@ func TestNameUniqueness(t *testing.T) {
 		t.Errorf("Failed to find neg")
 	}
 
+	expectedNegDesc2 := utils.StandardNEGDescription{
+		ClusterUID:  testKubesystemUID,
+		Namespace:   testServiceNameSpace,
+		ServiceName: testServiceName2,
+		Port:        testPort,
+	}
 	// Call ensureNetworkEndpointGroup with the same NEG name and different service name
 	_, err = ensureNetworkEndpointGroup(
 		testServiceNameSpace,
@@ -1849,14 +1949,14 @@ func TestNameUniqueness(t *testing.T) {
 		negName,
 		testZone,
 		testNamedPort,
-		testKubesystemUID,
-		testPort,
+		expectedNegDesc2,
 		networkEndpointType,
 		fakeCloud,
 		nil,
 		nil,
 		apiVersion,
 		false,
+		true,
 		networkInfo,
 		klog.TODO(),
 		metrics.NewNegMetrics())
@@ -1891,20 +1991,26 @@ func TestNegObjectCrd(t *testing.T) {
 		negtypes.NonGCPPrivateEndpointType,
 	} {
 		fakeCloud := negtypes.NewFakeNetworkEndpointGroupCloud(testSubnetwork, testNetwork)
+		expectedNegDesc := utils.StandardNEGDescription{
+			ClusterUID:  testKubesystemUID,
+			Namespace:   testServiceNameSpace,
+			ServiceName: testServiceName,
+			Port:        testPort,
+		}
 		negObj, err := ensureNetworkEndpointGroup(
 			testServiceNameSpace,
 			testServiceName,
 			negName,
 			testZone,
 			testNamedPort,
-			testKubesystemUID,
-			testPort,
+			expectedNegDesc,
 			networkEndpointType,
 			fakeCloud,
 			nil,
 			nil,
 			apiVersion,
 			false,
+			true,
 			networkInfo,
 			klog.TODO(),
 			metrics.NewNegMetrics())
@@ -1932,14 +2038,14 @@ func TestNegObjectCrd(t *testing.T) {
 			negName,
 			testZone,
 			testNamedPort,
-			testKubesystemUID,
-			testPort,
+			expectedNegDesc,
 			networkEndpointType,
 			fakeCloud,
 			nil,
 			nil,
 			apiVersion,
 			false,
+			true,
 			networkInfo,
 			klog.TODO(),
 			metrics.NewNegMetrics(),
@@ -1976,14 +2082,14 @@ func TestNEGRecreate(t *testing.T) {
 		}
 	)
 
-	matchingNegDesc := utils.NegDescription{
+	matchingNegDesc := utils.StandardNEGDescription{
 		ClusterUID:  testKubesystemUID,
 		Namespace:   testServiceNamespace,
 		ServiceName: testServiceName,
 		Port:        testPort,
 	}.String()
 
-	anotherNegDesc := utils.NegDescription{
+	anotherNegDesc := utils.StandardNEGDescription{
 		ClusterUID:  "another-cluster",
 		Namespace:   testServiceNamespace,
 		ServiceName: testServiceName,
@@ -2097,6 +2203,12 @@ func TestNEGRecreate(t *testing.T) {
 			Description:         tc.negDescription,
 		}, testZone, klog.TODO())
 
+		expectedNegDesc := utils.StandardNEGDescription{
+			ClusterUID:  testKubesystemUID,
+			Namespace:   testServiceNameSpace,
+			ServiceName: testServiceName,
+			Port:        testPort,
+		}
 		// Ensure with the correct network and subnet
 		_, err := ensureNetworkEndpointGroup(
 			testServiceNameSpace,
@@ -2104,14 +2216,14 @@ func TestNEGRecreate(t *testing.T) {
 			negName,
 			testZone,
 			testNamedPort,
-			testKubesystemUID,
-			testPort,
+			expectedNegDesc,
 			tc.negType,
 			fakeCloud,
 			nil,
 			nil,
 			apiVersion,
 			tc.customName,
+			true,
 			networkInfo,
 			klog.TODO(),
 			metrics.NewNegMetrics(),
@@ -2136,6 +2248,206 @@ func TestNEGRecreate(t *testing.T) {
 		} else if !tc.expectRecreate && (neg.Subnetwork != tc.subnetwork || neg.Network != tc.network) {
 			t.Errorf("TestCase: %s\n Neg should not have been recreated. Expected subnetwork %s, and found %s. Expected network %s, and found %s", tc.desc, tc.subnetwork, neg.Subnetwork, tc.network, neg.Network)
 		}
+	}
+}
+
+func TestEnsureNetworkEndpointGroupManageLifecycle(t *testing.T) {
+	t.Parallel()
+
+	var (
+		testZone             = "test-zone"
+		testNamedPort        = "named-port"
+		testServiceName      = "test-svc"
+		testServiceNameSpace = "test-ns"
+		testNetwork          = cloud.ResourcePath("network", &meta.Key{Zone: testZone, Name: "test-network"})
+		testSubnetwork       = cloud.ResourcePath("subnetwork", &meta.Key{Zone: testZone, Name: "test-subnetwork"})
+		testKubesystemUID    = "cluster-uid"
+		testPort             = "80"
+		negName              = "test-neg"
+		apiVersion           = meta.VersionGA
+		networkInfo          = network.NetworkInfo{
+			NetworkURL:    testNetwork,
+			SubnetworkURL: testSubnetwork,
+		}
+	)
+
+	testCases := []struct {
+		manageLifecycle bool
+	}{
+		{manageLifecycle: true},
+		{manageLifecycle: false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("manageLifecycle=%v", tc.manageLifecycle), func(t *testing.T) {
+			fakeCloud := negtypes.NewFakeNetworkEndpointGroupCloud(testSubnetwork, testNetwork)
+
+			expectedNegDesc := utils.StandardNEGDescription{
+				ClusterUID:  testKubesystemUID,
+				Namespace:   testServiceNameSpace,
+				ServiceName: testServiceName,
+				Port:        testPort,
+			}
+			// If there is no NEG in location it is expected to be for manageLifecycle=true it should create it
+			// and complete without any errors. Otherwise should return not found error.
+			_, err := ensureNetworkEndpointGroup(
+				testServiceNameSpace,
+				testServiceName,
+				negName,
+				testZone,
+				testNamedPort,
+				expectedNegDesc,
+				negtypes.VmIpPortEndpointType,
+				fakeCloud,
+				nil,
+				nil,
+				apiVersion,
+				false,
+				tc.manageLifecycle,
+				networkInfo,
+				klog.TODO(),
+				metrics.NewNegMetrics(),
+			)
+
+			if tc.manageLifecycle && err != nil {
+				t.Errorf("Expected no error when manageLifecycle=true but got: %v", err)
+			}
+			if !tc.manageLifecycle {
+				if err == nil {
+					t.Errorf("Expected error when manageLifecycle=false and NEG does not exist, but got nil")
+				} else if !utils.IsNotFoundError(err) {
+					t.Errorf("Expected NotFound error when manageLifecycle=false, but got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestEnsureNetworkEndpointGroupManageLifecycleNetSubnetMismatch(t *testing.T) {
+	t.Parallel()
+
+	var (
+		testZone             = "test-zone"
+		testNamedPort        = "named-port"
+		testServiceName      = "test-svc"
+		testServiceNameSpace = "test-ns"
+		testNetwork          = cloud.ResourcePath("network", &meta.Key{Zone: testZone, Name: "test-network"})
+		testSubnetwork       = cloud.ResourcePath("subnetwork", &meta.Key{Zone: testZone, Name: "test-subnetwork"})
+		diffNetwork          = cloud.ResourcePath("network", &meta.Key{Zone: testZone, Name: "another-network"})
+		diffSubnetwork       = cloud.ResourcePath("subnetwork", &meta.Key{Zone: testZone, Name: "another-subnetwork"})
+		testKubesystemUID    = "cluster-uid"
+		testPort             = "80"
+		negName              = "test-neg"
+		apiVersion           = meta.VersionGA
+		networkInfo          = network.NetworkInfo{
+			NetworkURL:    testNetwork,
+			SubnetworkURL: testSubnetwork,
+		}
+	)
+
+	matchingNegDesc := utils.StandardNEGDescription{
+		ClusterUID:  testKubesystemUID,
+		Namespace:   testServiceNameSpace,
+		ServiceName: testServiceName,
+		Port:        testPort,
+	}.String()
+
+	testCases := []struct {
+		desc            string
+		manageLifecycle bool
+		expectError     bool
+		expectRecreate  bool
+	}{
+		{
+			desc:            "mismatch network, manageLifecycle=true -> recreate",
+			manageLifecycle: true,
+			expectError:     false,
+			expectRecreate:  true,
+		},
+		{
+			desc:            "mismatch network, manageLifecycle=false -> error, no recreate",
+			manageLifecycle: false,
+			expectError:     true,
+			expectRecreate:  false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			fakeGCE := gce.NewFakeGCECloud(gce.DefaultTestClusterValues())
+			negtypes.MockNetworkEndpointAPIs(fakeGCE)
+			fakeCloud := negtypes.NewAdapterWithNetwork(fakeGCE, testNetwork, testSubnetwork, metrics.NewNegMetrics())
+
+			// Pre-create NEG with different network/subnetwork
+			fakeCloud.CreateNetworkEndpointGroup(&composite.NetworkEndpointGroup{
+				Version:             apiVersion,
+				Name:                negName,
+				NetworkEndpointType: string(negtypes.VmIpPortEndpointType),
+				Network:             diffNetwork,
+				Subnetwork:          diffSubnetwork,
+				Description:         matchingNegDesc,
+			}, testZone, klog.TODO())
+
+			expectedNegDesc := utils.StandardNEGDescription{
+				ClusterUID:  testKubesystemUID,
+				Namespace:   testServiceNameSpace,
+				ServiceName: testServiceName,
+				Port:        testPort,
+			}
+			// Call ensureNetworkEndpointGroup with the correct networkInfo (testNetwork/testSubnetwork)
+			_, err := ensureNetworkEndpointGroup(
+				testServiceNameSpace,
+				testServiceName,
+				negName,
+				testZone,
+				testNamedPort,
+				expectedNegDesc,
+				negtypes.VmIpPortEndpointType,
+				fakeCloud,
+				nil,
+				nil,
+				apiVersion,
+				false,
+				tc.manageLifecycle,
+				networkInfo,
+				klog.TODO(),
+				metrics.NewNegMetrics(),
+			)
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got nil")
+				} else {
+					expectedErr := fmt.Sprintf("NEG %s in zone %s does not match network and subnetwork of the cluster", negName, testZone)
+					if err.Error() != expectedErr {
+						t.Errorf("Expected error %q, but got %q", expectedErr, err.Error())
+					}
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error but got: %v", err)
+				}
+			}
+
+			// Retrieve the NEG to check its state
+			neg, err := fakeCloud.GetNetworkEndpointGroup(negName, testZone, apiVersion, klog.TODO())
+			if err != nil {
+				t.Fatalf("Failed to retrieve NEG: %v", err)
+			}
+			if neg == nil {
+				t.Fatalf("NEG not found")
+			}
+
+			if tc.expectRecreate {
+				if neg.Network != testNetwork || neg.Subnetwork != testSubnetwork {
+					t.Errorf("Expected NEG to be recreated with network %s and subnetwork %s, but got %s and %s", testNetwork, testSubnetwork, neg.Network, neg.Subnetwork)
+				}
+			} else {
+				if neg.Network != diffNetwork || neg.Subnetwork != diffSubnetwork {
+					t.Errorf("Expected NEG to NOT be recreated, remaining with network %s and subnetwork %s, but got %s and %s", diffNetwork, diffSubnetwork, neg.Network, neg.Subnetwork)
+				}
+			}
+		})
 	}
 }
 

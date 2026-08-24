@@ -12,6 +12,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/ingress-gce/pkg/multiproject/common/filteredinformer"
+	"k8s.io/ingress-gce/pkg/neg"
+	negbindingclient "k8s.io/ingress-gce/pkg/negbinding/client/clientset/versioned"
+	negbindinginformers "k8s.io/ingress-gce/pkg/negbinding/client/informers/externalversions"
 	svcnegclient "k8s.io/ingress-gce/pkg/svcneg/client/clientset/versioned"
 	svcneginformers "k8s.io/ingress-gce/pkg/svcneg/client/informers/externalversions"
 	"k8s.io/ingress-gce/pkg/utils/endpointslices"
@@ -25,6 +28,7 @@ type InformerSet struct {
 	svcNegFactory       svcneginformers.SharedInformerFactory
 	networkFactory      networkinformers.SharedInformerFactory
 	nodetopologyFactory nodetopologyinformers.SharedInformerFactory
+	negBindingFactory   negbindinginformers.SharedInformerFactory
 
 	// Core Kubernetes informers (always present)
 	Ingress       cache.SharedIndexInformer
@@ -35,6 +39,7 @@ type InformerSet struct {
 
 	// Custom resource informers (may be nil)
 	SvcNeg           cache.SharedIndexInformer // ServiceNetworkEndpointGroups CRD
+	NEGBinding       cache.SharedIndexInformer // NEGBinding CRD
 	Network          cache.SharedIndexInformer // GKE Network CRD
 	GkeNetworkParams cache.SharedIndexInformer // GKENetworkParamSets CRD
 	NodeTopology     cache.SharedIndexInformer // NodeTopology CRD
@@ -49,6 +54,7 @@ type InformerSet struct {
 func NewInformerSet(
 	kubeClient kubernetes.Interface,
 	svcNegClient svcnegclient.Interface,
+	negBindingClient negbindingclient.Interface,
 	networkClient networkclient.Interface,
 	nodeTopologyClient nodetopologyclient.Interface,
 	resyncPeriod metav1.Duration,
@@ -64,6 +70,9 @@ func NewInformerSet(
 	}
 	if nodeTopologyClient != nil {
 		infSet.nodetopologyFactory = nodetopologyinformers.NewSharedInformerFactory(nodeTopologyClient, resyncPeriod.Duration)
+	}
+	if negBindingClient != nil {
+		infSet.negBindingFactory = negbindinginformers.NewSharedInformerFactory(negBindingClient, resyncPeriod.Duration)
 	}
 
 	// Create core Kubernetes informers from factory
@@ -93,6 +102,16 @@ func NewInformerSet(
 
 	if infSet.nodetopologyFactory != nil {
 		infSet.NodeTopology = infSet.nodetopologyFactory.Networking().V1().NodeTopologies().Informer()
+	}
+
+	if infSet.negBindingFactory != nil {
+		negBindingInformer := infSet.negBindingFactory.Networking().V1beta1().NetworkEndpointGroupBindings().Informer()
+		if err := negBindingInformer.AddIndexers(cache.Indexers{
+			neg.ServiceKeyIndex: neg.ServiceKeyIndexFunc,
+		}); err != nil {
+			klog.Fatalf("failed to add indexers to NEGBinding informer: %v", err)
+		}
+		infSet.NEGBinding = negBindingInformer
 	}
 	return infSet
 }
@@ -130,6 +149,9 @@ func (i *InformerSet) Start(stopCh <-chan struct{}, logger klog.Logger) error {
 	if i.nodetopologyFactory != nil {
 		i.nodetopologyFactory.Start(stopCh)
 	}
+	if i.negBindingFactory != nil {
+		i.negBindingFactory.Start(stopCh)
+	}
 
 	i.started = true
 
@@ -154,33 +176,36 @@ func (i *InformerSet) FilterByProviderConfig(providerConfigName string) *Informe
 
 	// Wrap core informers
 	if i.Ingress != nil {
-		filteredInformers.Ingress = newProviderConfigFilteredInformer(i.Ingress, providerConfigName)
+		filteredInformers.Ingress = newProviderConfigFilteredInformer(i.Ingress, providerConfigName, false)
 	}
 	if i.Service != nil {
-		filteredInformers.Service = newProviderConfigFilteredInformer(i.Service, providerConfigName)
+		filteredInformers.Service = newProviderConfigFilteredInformer(i.Service, providerConfigName, false)
 	}
 	if i.Pod != nil {
-		filteredInformers.Pod = newProviderConfigFilteredInformer(i.Pod, providerConfigName)
+		filteredInformers.Pod = newProviderConfigFilteredInformer(i.Pod, providerConfigName, false)
 	}
 	if i.Node != nil {
-		filteredInformers.Node = newProviderConfigFilteredInformer(i.Node, providerConfigName)
+		filteredInformers.Node = newProviderConfigFilteredInformer(i.Node, providerConfigName, true)
 	}
 	if i.EndpointSlice != nil {
-		filteredInformers.EndpointSlice = newProviderConfigFilteredInformer(i.EndpointSlice, providerConfigName)
+		filteredInformers.EndpointSlice = newProviderConfigFilteredInformer(i.EndpointSlice, providerConfigName, false)
 	}
 
 	// Wrap optional informers
 	if i.SvcNeg != nil {
-		filteredInformers.SvcNeg = newProviderConfigFilteredInformer(i.SvcNeg, providerConfigName)
+		filteredInformers.SvcNeg = newProviderConfigFilteredInformer(i.SvcNeg, providerConfigName, false)
 	}
 	if i.Network != nil {
-		filteredInformers.Network = newProviderConfigFilteredInformer(i.Network, providerConfigName)
+		filteredInformers.Network = newProviderConfigFilteredInformer(i.Network, providerConfigName, false)
 	}
 	if i.GkeNetworkParams != nil {
-		filteredInformers.GkeNetworkParams = newProviderConfigFilteredInformer(i.GkeNetworkParams, providerConfigName)
+		filteredInformers.GkeNetworkParams = newProviderConfigFilteredInformer(i.GkeNetworkParams, providerConfigName, false)
 	}
 	if i.NodeTopology != nil {
-		filteredInformers.NodeTopology = newProviderConfigFilteredInformer(i.NodeTopology, providerConfigName)
+		filteredInformers.NodeTopology = newProviderConfigFilteredInformer(i.NodeTopology, providerConfigName, false)
+	}
+	if i.NEGBinding != nil {
+		filteredInformers.NEGBinding = newProviderConfigFilteredInformer(i.NEGBinding, providerConfigName, false)
 	}
 
 	return filteredInformers
@@ -188,8 +213,8 @@ func (i *InformerSet) FilterByProviderConfig(providerConfigName string) *Informe
 
 // newProviderConfigFilteredInformer wraps an informer with a provider config filter.
 // The filtered informer shares the same underlying cache and indexers.
-func newProviderConfigFilteredInformer(informer cache.SharedIndexInformer, providerConfigName string) cache.SharedIndexInformer {
-	return filteredinformer.NewProviderConfigFilteredInformer(informer, providerConfigName)
+func newProviderConfigFilteredInformer(informer cache.SharedIndexInformer, providerConfigName string, allowMissing bool) cache.SharedIndexInformer {
+	return filteredinformer.NewProviderConfigFilteredInformer(informer, providerConfigName, allowMissing)
 }
 
 // CombinedHasSynced returns a function that checks if all informers have synced.
@@ -238,6 +263,9 @@ func (i *InformerSet) hasSyncedFuncs() []func() bool {
 	}
 	if i.NodeTopology != nil {
 		funcs = append(funcs, i.NodeTopology.HasSynced)
+	}
+	if i.NEGBinding != nil {
+		funcs = append(funcs, i.NEGBinding.HasSynced)
 	}
 
 	return funcs

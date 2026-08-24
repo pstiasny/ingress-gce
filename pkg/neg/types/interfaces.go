@@ -26,6 +26,7 @@ import (
 
 	"k8s.io/ingress-gce/pkg/composite"
 	"k8s.io/ingress-gce/pkg/neg/types/shared"
+	"k8s.io/ingress-gce/pkg/network"
 	"k8s.io/ingress-gce/pkg/utils/namer"
 	"k8s.io/ingress-gce/pkg/utils/zonegetter"
 	"k8s.io/klog/v2"
@@ -46,6 +47,7 @@ type NetworkEndpointGroupCloud interface {
 	NetworkProjectID() string
 	Region() string
 	GetNetwork(networkName string) (*compute.Network, error)
+	Zones() ([]string, error)
 }
 
 // NetworkEndpointGroupNamer is an interface for generating network endpoint group name.
@@ -105,8 +107,8 @@ type NetworkEndpointsCalculator interface {
 // TopologyProvider is an interface for looking up zone and subnet information for NEG syncer.
 // It helps to determine GCE locations (subnets and zones) where NEGs should be created and/or synced.
 type TopologyProvider interface {
-	ListSubnets(logger klog.Logger) []nodetopologyv1.SubnetConfig
-	ListZonesPerSubnet(filter zonegetter.Filter, logger klog.Logger) (shared.ZonesPerSubnetMap, error)
+	ListSubnetsInDefaultNetwork(logger klog.Logger) []nodetopologyv1.SubnetConfig
+	ListZonesPerSubnet(filter zonegetter.Filter, networkInfo network.NetworkInfo, logger klog.Logger) (shared.ZonesPerSubnetMap, error)
 }
 
 // NEGStatusHandler defines interface for reporting NEG syncer status.

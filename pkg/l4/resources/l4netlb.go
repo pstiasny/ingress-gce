@@ -198,11 +198,11 @@ func (l4netlb *L4NetLB) createKey(name string) (*meta.Key, error) {
 	return composite.CreateKey(l4netlb.cloud, name, l4netlb.scope)
 }
 
-// isSessionAffinityConfigEmpty checks if Session Affinity Config doesn't have:
+// isSessionAffinityConfigEmpty checks if Session Affinity Config is nil or doesn't have:
 //   - ClientIP or
 //   - ClientIP.TimeoutSeconds specified
 func isSessionAffinityConfigEmpty(sessionAffinityConfig *corev1.SessionAffinityConfig) bool {
-	return sessionAffinityConfig.ClientIP == nil || sessionAffinityConfig.ClientIP.TimeoutSeconds == nil
+	return sessionAffinityConfig == nil || sessionAffinityConfig.ClientIP == nil || sessionAffinityConfig.ClientIP.TimeoutSeconds == nil
 }
 
 // checkStrongSessionAffinityRequirements returns an error if Strong Session Affinity (SSA) was enabled:
@@ -270,6 +270,28 @@ func (l4netlb *L4NetLB) EnsureFrontend(nodeNames []string, svc *corev1.Service, 
 	l4netlb.svcLogger.V(3).Info("EnsureFrontend started for service", "networkInfo", fmt.Sprintf("%+v", networkInfo))
 
 	l4netlb.networkInfo = *networkInfo
+
+	var ipCollectionV6 string
+	if flags.F.EnableBYOIPv6 {
+		ipCollectionV6 = annotations.FromService(svc).GetIPCollectionV6()
+	}
+	subnet := annotations.FromService(svc).GetExternalLoadBalancerAnnotationSubnet()
+	if ipCollectionV6 != "" && subnet != "" {
+		err := fmt.Errorf("cannot specify both %s (%q) and %s (%q) for LoadBalancer", annotations.CustomSubnetAnnotationKey, subnet, annotations.IPCollectionV6AnnotationKey, ipCollectionV6)
+		result.Error = l4utils.NewUserError(err)
+		result.MetricsState.Status = metrics.StatusUserError
+		result.MetricsLegacyState.IsUserError = true
+		return result
+	}
+
+	// Check if ip-collection-v6 is specified for an IPv4 service
+	if ipCollectionV6 != "" && l4utils.NeedsIPv4(svc) {
+		err := fmt.Errorf("%s is currently only supported for IPv6-only Services", annotations.IPCollectionV6AnnotationKey)
+		result.Error = l4utils.NewUserError(err)
+		result.MetricsState.Status = metrics.StatusUserError
+		result.MetricsLegacyState.IsUserError = true
+		return result
+	}
 
 	// if service requires strong session affinity, check requirements
 	if err := l4netlb.checkStrongSessionAffinityRequirements(); err != nil {

@@ -34,6 +34,11 @@
 //
 // # Other authentication options
 //
+// By default, all available scopes (see "Constants") are used to authenticate.
+// To restrict scopes, use [google.golang.org/api/option.WithScopes]:
+//
+//	containerService, err := container.NewService(ctx, option.WithScopes(container.ContainerReadOnlyScope))
+//
 // To use an API key for authentication (note: some APIs do not support API
 // keys), use [google.golang.org/api/option.WithAPIKey]:
 //
@@ -101,12 +106,22 @@ const (
 	// See, edit, configure, and delete your Google Cloud data and see the email
 	// address for your Google Account.
 	CloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
+
+	// See, edit, configure, and delete your Google Kubernetes Engine data and see
+	// the email address for your Google Account
+	ContainerScope = "https://www.googleapis.com/auth/container"
+
+	// See your Google Kubernetes Engine data and the email address of your Google
+	// Account
+	ContainerReadOnlyScope = "https://www.googleapis.com/auth/container.read-only"
 )
 
 // NewService creates a new Service.
 func NewService(ctx context.Context, opts ...option.ClientOption) (*Service, error) {
 	scopesOption := internaloption.WithDefaultScopes(
 		"https://www.googleapis.com/auth/cloud-platform",
+		"https://www.googleapis.com/auth/container",
+		"https://www.googleapis.com/auth/container.read-only",
 	)
 	// NOTE: prepend, so we don't override user-specified scopes.
 	opts = append([]option.ClientOption{scopesOption}, opts...)
@@ -480,6 +495,8 @@ func (s AdditionalPodRangesConfig) MarshalJSON() ([]byte, error) {
 // AddonsConfig: Configuration for the addons that can be automatically spun up
 // in the cluster, enabling additional functionality.
 type AddonsConfig struct {
+	// AgentSandboxConfig: Optional. Configuration for the AgentSandbox addon.
+	AgentSandboxConfig *AgentSandboxConfig `json:"agentSandboxConfig,omitempty"`
 	// CloudRunConfig: Configuration for the Cloud Run addon, which allows the user
 	// to use a managed Knative service.
 	CloudRunConfig *CloudRunConfig `json:"cloudRunConfig,omitempty"`
@@ -522,6 +539,9 @@ type AddonsConfig struct {
 	// whether the addon is enabled or not on the Master, it does not track whether
 	// network policy is enabled for the nodes.
 	NetworkPolicyConfig *NetworkPolicyConfig `json:"networkPolicyConfig,omitempty"`
+	// NodeReadinessConfig: Optional. Configuration for NodeReadinessController
+	// add-on.
+	NodeReadinessConfig *NodeReadinessConfig `json:"nodeReadinessConfig,omitempty"`
 	// ParallelstoreCsiDriverConfig: Configuration for the Cloud Storage
 	// Parallelstore CSI driver.
 	ParallelstoreCsiDriverConfig *ParallelstoreCsiDriverConfig `json:"parallelstoreCsiDriverConfig,omitempty"`
@@ -532,17 +552,19 @@ type AddonsConfig struct {
 	// SliceControllerConfig: Optional. Configuration for the slice controller
 	// add-on.
 	SliceControllerConfig *SliceControllerConfig `json:"sliceControllerConfig,omitempty"`
+	// SlurmOperatorConfig: Configuration for the Slurm Operator.
+	SlurmOperatorConfig *SlurmOperatorConfig `json:"slurmOperatorConfig,omitempty"`
 	// StatefulHaConfig: Optional. Configuration for the StatefulHA add-on.
 	StatefulHaConfig *StatefulHAConfig `json:"statefulHaConfig,omitempty"`
-	// ForceSendFields is a list of field names (e.g. "CloudRunConfig") to
+	// ForceSendFields is a list of field names (e.g. "AgentSandboxConfig") to
 	// unconditionally include in API requests. By default, fields with empty or
 	// default values are omitted from API requests. See
 	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
 	// details.
 	ForceSendFields []string `json:"-"`
-	// NullFields is a list of field names (e.g. "CloudRunConfig") to include in
-	// API requests with the JSON null value. By default, fields with empty values
-	// are omitted from API requests. See
+	// NullFields is a list of field names (e.g. "AgentSandboxConfig") to include
+	// in API requests with the JSON null value. By default, fields with empty
+	// values are omitted from API requests. See
 	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
 	NullFields []string `json:"-"`
 }
@@ -620,6 +642,28 @@ type AdvancedMachineFeatures struct {
 
 func (s AdvancedMachineFeatures) MarshalJSON() ([]byte, error) {
 	type NoMethod AdvancedMachineFeatures
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// AgentSandboxConfig: Configuration for the AgentSandbox addon.
+type AgentSandboxConfig struct {
+	// Enabled: Optional. Whether AgentSandbox is enabled for this cluster.
+	Enabled bool `json:"enabled,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Enabled") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Enabled") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s AgentSandboxConfig) MarshalJSON() ([]byte, error) {
+	type NoMethod AgentSandboxConfig
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -1434,6 +1478,10 @@ type Cluster struct {
 	// CreateTime: Output only. The time the cluster was created, in RFC3339
 	// (https://www.ietf.org/rfc/rfc3339.txt) text format.
 	CreateTime string `json:"createTime,omitempty"`
+	// CurrentEmulatedVersion: Output only. The current emulated version of the
+	// master endpoint. The version is in minor version format, e.g. 1.30. No value
+	// or empty string means the cluster has no emulated version.
+	CurrentEmulatedVersion string `json:"currentEmulatedVersion,omitempty"`
 	// CurrentMasterVersion: Output only. The current software version of the
 	// master endpoint.
 	CurrentMasterVersion string `json:"currentMasterVersion,omitempty"`
@@ -1601,6 +1649,8 @@ type Cluster struct {
 	// node pool, see `node_pool.config`) If unspecified, the defaults are used.
 	// This field is deprecated, use node_pool.config instead.
 	NodeConfig *NodeConfig `json:"nodeConfig,omitempty"`
+	// NodeCreationConfig: Optional. Configuration for Node Creation Mode.
+	NodeCreationConfig *NodeCreationConfig `json:"nodeCreationConfig,omitempty"`
 	// NodeIpv4CidrSize: Output only. The size of the address space on each node
 	// for hosting containers. This is provisioned from within the
 	// `container_ipv4_cidr` range. This field will only be set when cluster is in
@@ -1642,6 +1692,10 @@ type Cluster struct {
 	// ResourceUsageExportConfig: Configuration for exporting resource usages.
 	// Resource usage export is disabled when this config is unspecified.
 	ResourceUsageExportConfig *ResourceUsageExportConfig `json:"resourceUsageExportConfig,omitempty"`
+	// RollbackSafeUpgrade: Optional. The rollback safe upgrade information of the
+	// cluster. This field is used when user manually triggers a rollback safe
+	// upgrade.
+	RollbackSafeUpgrade *RollbackSafeUpgrade `json:"rollbackSafeUpgrade,omitempty"`
 	// SatisfiesPzi: Output only. Reserved for future use.
 	SatisfiesPzi bool `json:"satisfiesPzi,omitempty"`
 	// SatisfiesPzs: Output only. Reserved for future use.
@@ -1914,6 +1968,9 @@ type ClusterUpdate struct {
 	DesiredDisableL4LbFirewallReconciliation bool `json:"desiredDisableL4LbFirewallReconciliation,omitempty"`
 	// DesiredDnsConfig: DNSConfig contains clusterDNS config for this cluster.
 	DesiredDnsConfig *DNSConfig `json:"desiredDnsConfig,omitempty"`
+	// DesiredEmulatedVersion: Optional. The desired emulated version for the
+	// cluster.
+	DesiredEmulatedVersion string `json:"desiredEmulatedVersion,omitempty"`
 	// DesiredEnableCiliumClusterwideNetworkPolicy: Enable/Disable Cilium
 	// Clusterwide Network Policy for the cluster.
 	DesiredEnableCiliumClusterwideNetworkPolicy bool `json:"desiredEnableCiliumClusterwideNetworkPolicy,omitempty"`
@@ -1942,6 +1999,14 @@ type ClusterUpdate struct {
 	// DesiredIdentityServiceConfig: The desired Identity Service component
 	// configuration.
 	DesiredIdentityServiceConfig *IdentityServiceConfig `json:"desiredIdentityServiceConfig,omitempty"`
+	// DesiredImage: The desired name of the image to use for this node. This is
+	// used to create clusters using a custom image. NOTE: Set the
+	// "desired_node_pool" field as well.
+	DesiredImage string `json:"desiredImage,omitempty"`
+	// DesiredImageProject: The project containing the desired image to use for
+	// this node. This is used to create clusters using a custom image. NOTE: Set
+	// the "desired_node_pool" field as well.
+	DesiredImageProject string `json:"desiredImageProject,omitempty"`
 	// DesiredImageType: The desired image type for the node pool. NOTE: Set the
 	// "desired_node_pool" field as well.
 	DesiredImageType string `json:"desiredImageType,omitempty"`
@@ -2018,6 +2083,9 @@ type ClusterUpdate struct {
 	// DesiredNetworkTierConfig: The desired network tier configuration for the
 	// cluster.
 	DesiredNetworkTierConfig *NetworkTierConfig `json:"desiredNetworkTierConfig,omitempty"`
+	// DesiredNodeCreationConfig: Optional. The desired NodeCreationConfig for the
+	// cluster.
+	DesiredNodeCreationConfig *NodeCreationConfig `json:"desiredNodeCreationConfig,omitempty"`
 	// DesiredNodeKubeletConfig: The desired node kubelet config for the cluster.
 	DesiredNodeKubeletConfig *NodeKubeletConfig `json:"desiredNodeKubeletConfig,omitempty"`
 	// DesiredNodePoolAutoConfigKubeletConfig: The desired node kubelet config for
@@ -2095,6 +2163,9 @@ type ClusterUpdate struct {
 	// DesiredResourceUsageExportConfig: The desired configuration for exporting
 	// resource usage.
 	DesiredResourceUsageExportConfig *ResourceUsageExportConfig `json:"desiredResourceUsageExportConfig,omitempty"`
+	// DesiredRollbackSafeUpgrade: Optional. The desired rollback safe upgrade
+	// configuration.
+	DesiredRollbackSafeUpgrade *RollbackSafeUpgrade `json:"desiredRollbackSafeUpgrade,omitempty"`
 	// DesiredSecretManagerConfig: Enable/Disable Secret Manager Config.
 	DesiredSecretManagerConfig *SecretManagerConfig `json:"desiredSecretManagerConfig,omitempty"`
 	// DesiredSecretSyncConfig: Configuration for sync Secret Manager secrets as
@@ -2204,6 +2275,9 @@ type ClusterUpgradeInfo struct {
 	//   "SYSTEM_CONFIG" - SYSTEM_CONFIG indicates the cluster upgrade is paused by
 	// system config.
 	PausedReason []string `json:"pausedReason,omitempty"`
+	// RollbackSafeUpgradeStatus: Output only. The cluster's rollback-safe upgrade
+	// status.
+	RollbackSafeUpgradeStatus *RollbackSafeUpgradeStatus `json:"rollbackSafeUpgradeStatus,omitempty"`
 	// UpgradeDetails: The list of past auto upgrades.
 	UpgradeDetails []*UpgradeDetails `json:"upgradeDetails,omitempty"`
 
@@ -2224,6 +2298,29 @@ type ClusterUpgradeInfo struct {
 
 func (s ClusterUpgradeInfo) MarshalJSON() ([]byte, error) {
 	type NoMethod ClusterUpgradeInfo
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// CompleteControlPlaneUpgradeRequest: CompleteControlPlaneUpgradeRequest sets
+// the name of target cluster to complete upgrade.
+type CompleteControlPlaneUpgradeRequest struct {
+	// Version: Optional. API request version that initiates this operation.
+	Version string `json:"version,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Version") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Version") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s CompleteControlPlaneUpgradeRequest) MarshalJSON() ([]byte, error) {
+	type NoMethod CompleteControlPlaneUpgradeRequest
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -2616,6 +2713,76 @@ func (s CreateNodePoolRequest) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// CustomImageConfig: CustomImageConfig contains the information r
+type CustomImageConfig struct {
+	// Image: The name of the image to use for this node.
+	Image string `json:"image,omitempty"`
+	// ImageProject: The project containing the image to use for this node.
+	ImageProject string `json:"imageProject,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Image") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Image") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s CustomImageConfig) MarshalJSON() ([]byte, error) {
+	type NoMethod CustomImageConfig
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// CustomImageInfo: Contains the custom image info for a node pool.
+type CustomImageInfo struct {
+	// UpgradeMessage: Output only. The human-readable upgrade message for the
+	// custom image.
+	UpgradeMessage string `json:"upgradeMessage,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "UpgradeMessage") to
+	// unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "UpgradeMessage") to include in
+	// API requests with the JSON null value. By default, fields with empty values
+	// are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s CustomImageInfo) MarshalJSON() ([]byte, error) {
+	type NoMethod CustomImageInfo
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// CustomNodeInit: Support for running custom init code while bootstrapping
+// nodes.
+type CustomNodeInit struct {
+	// InitScript: Optional. The init script to be executed on the node.
+	InitScript *InitScript `json:"initScript,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "InitScript") to
+	// unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "InitScript") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s CustomNodeInit) MarshalJSON() ([]byte, error) {
+	type NoMethod CustomNodeInit
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // DNSConfig: DNSConfig contains the desired set of options for configuring
 // clusterDNS.
 type DNSConfig struct {
@@ -2791,6 +2958,71 @@ func (s DatabaseEncryption) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// DataplaneV2Config: DataplaneV2Config is the configuration for DPv2.
+type DataplaneV2Config struct {
+	// ScalabilityMode: Optional. Scalability mode for the cluster.
+	//
+	// Possible values:
+	//   "SCALABILITY_MODE_UNSPECIFIED" - Default value.
+	//   "DISABLED" - Disables the scale optimized mode for DPv2.
+	//   "SCALE_OPTIMIZED" - Enables the scale optimized mode for DPv2.
+	ScalabilityMode string `json:"scalabilityMode,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "ScalabilityMode") to
+	// unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "ScalabilityMode") to include in
+	// API requests with the JSON null value. By default, fields with empty values
+	// are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s DataplaneV2Config) MarshalJSON() ([]byte, error) {
+	type NoMethod DataplaneV2Config
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// Date: Represents a whole or partial calendar date, such as a birthday. The
+// time of day and time zone are either specified elsewhere or are
+// insignificant. The date is relative to the Gregorian Calendar. This can
+// represent one of the following: * A full date, with non-zero year, month,
+// and day values. * A month and day, with a zero year (for example, an
+// anniversary). * A year on its own, with a zero month and a zero day. * A
+// year and month, with a zero day (for example, a credit card expiration
+// date). Related types: * google.type.TimeOfDay * google.type.DateTime *
+// google.protobuf.Timestamp
+type Date struct {
+	// Day: Day of a month. Must be from 1 to 31 and valid for the year and month,
+	// or 0 to specify a year by itself or a year and month where the day isn't
+	// significant.
+	Day int64 `json:"day,omitempty"`
+	// Month: Month of a year. Must be from 1 to 12, or 0 to specify a year without
+	// a month and day.
+	Month int64 `json:"month,omitempty"`
+	// Year: Year of the date. Must be from 1 to 9999, or 0 to specify a date
+	// without a year.
+	Year int64 `json:"year,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Day") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Day") to include in API requests
+	// with the JSON null value. By default, fields with empty values are omitted
+	// from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s Date) MarshalJSON() ([]byte, error) {
+	type NoMethod Date
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // DedicatedLocalSsdProfile: Provisions a new, separate local NVMe SSD
 // exclusively for swap.
 type DedicatedLocalSsdProfile struct {
@@ -2912,6 +3144,34 @@ type DesiredEnterpriseConfig struct {
 
 func (s DesiredEnterpriseConfig) MarshalJSON() ([]byte, error) {
 	type NoMethod DesiredEnterpriseConfig
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// DiskIoScheduler: DiskIoScheduler contains the configuration for the disk IO
+// scheduler.
+type DiskIoScheduler struct {
+	// NodeAttachedDiskIoScheduler: Optional. Configures the IO scheduler for the
+	// attached disks. Supported values are `mq-deadline`, `bfq`, `kyber`, `none`.
+	NodeAttachedDiskIoScheduler string `json:"nodeAttachedDiskIoScheduler,omitempty"`
+	// NodeSystemIoScheduler: Optional. Configures the IO scheduler for the boot
+	// disk or ephemeral lssd that runs node system workloads. Supported values are
+	// `mq-deadline`, `bfq`, `kyber`, `none`.
+	NodeSystemIoScheduler string `json:"nodeSystemIoScheduler,omitempty"`
+	// ForceSendFields is a list of field names (e.g.
+	// "NodeAttachedDiskIoScheduler") to unconditionally include in API requests.
+	// By default, fields with empty or default values are omitted from API
+	// requests. See https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields
+	// for more details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "NodeAttachedDiskIoScheduler") to
+	// include in API requests with the JSON null value. By default, fields with
+	// empty values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s DiskIoScheduler) MarshalJSON() ([]byte, error) {
+	type NoMethod DiskIoScheduler
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -3307,6 +3567,37 @@ type EvictionSignals struct {
 
 func (s EvictionSignals) MarshalJSON() ([]byte, error) {
 	type NoMethod EvictionSignals
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// ExclusionUntilEndOfSupport: Defines the maintenance exclusion for the node
+// pool.
+type ExclusionUntilEndOfSupport struct {
+	// Enabled: Optional. Indicates whether the exclusion is enabled.
+	Enabled bool `json:"enabled,omitempty"`
+	// EndTime: Output only. The end time of the maintenance exclusion. It is
+	// output only. It is the cluster control plane version's end of support time,
+	// or end of extended support time when the cluster is on extended support
+	// channel.
+	EndTime string `json:"endTime,omitempty"`
+	// StartTime: Output only. The start time of the maintenance exclusion. It is
+	// output only. It is the exclusion creation time.
+	StartTime string `json:"startTime,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Enabled") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Enabled") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s ExclusionUntilEndOfSupport) MarshalJSON() ([]byte, error) {
+	type NoMethod ExclusionUntilEndOfSupport
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -4205,6 +4496,49 @@ func (s IdentityServiceConfig) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// InitScript: InitScript provide a simply bash script to be executed on the
+// node.
+type InitScript struct {
+	// Args: Optional. The optional arguments line to be passed to the init script.
+	Args []string `json:"args,omitempty"`
+	// GcpSecretManagerSecretUri: The resource name of the secret manager secret
+	// hosting the init script. Both global and regional secrets are supported with
+	// format below: Global secret:
+	// projects/{project}/secrets/{secret}/versions/{version} Regional secret:
+	// projects/{project}/locations/{location}/secrets/{secret}/versions/{version}
+	// Example: projects/1234567890/secrets/script_1/versions/1. Accept version
+	// number only, not support version alias. User can't configure both
+	// gcp_secret_manager_secret_uri and gcs_uri.
+	GcpSecretManagerSecretUri string `json:"gcpSecretManagerSecretUri,omitempty"`
+	// GcsGeneration: The generation of the init script stored in Gloud Storage.
+	// This is the required field to identify the version of the init script. User
+	// can get the genetaion from `gcloud storage objects describe
+	// gs://BUCKET_NAME/OBJECT_NAME --format="value(generation)" or from the
+	// "Version history" tab of the object in the Cloud Console UI.
+	GcsGeneration int64 `json:"gcsGeneration,omitempty,string"`
+	// GcsUri: The Cloud Storage URI for storing the init script. Format:
+	// gs://BUCKET_NAME/OBJECT_NAME The service account on the node pool must have
+	// read access to the object. User can't configure both gcs_uri and
+	// gcp_secret_manager_secret_uri.
+	GcsUri string `json:"gcsUri,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Args") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Args") to include in API requests
+	// with the JSON null value. By default, fields with empty values are omitted
+	// from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s InitScript) MarshalJSON() ([]byte, error) {
+	type NoMethod InitScript
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // IntraNodeVisibilityConfig: IntraNodeVisibilityConfig contains the desired
 // config of the intra-node visibility on this cluster.
 type IntraNodeVisibilityConfig struct {
@@ -4288,6 +4622,30 @@ func (s K8sBetaAPIConfig) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// KubeletCertInfo: Contains expiry information about the kubelet certificate.
+type KubeletCertInfo struct {
+	// NonTpmBootstrapCertExpireTime: Output only.
+	NonTpmBootstrapCertExpireTime string `json:"nonTpmBootstrapCertExpireTime,omitempty"`
+	// TpmBootstrapCertExpireTime: Output only.
+	TpmBootstrapCertExpireTime string `json:"tpmBootstrapCertExpireTime,omitempty"`
+	// ForceSendFields is a list of field names (e.g.
+	// "NonTpmBootstrapCertExpireTime") to unconditionally include in API requests.
+	// By default, fields with empty or default values are omitted from API
+	// requests. See https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields
+	// for more details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "NonTpmBootstrapCertExpireTime")
+	// to include in API requests with the JSON null value. By default, fields with
+	// empty values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s KubeletCertInfo) MarshalJSON() ([]byte, error) {
+	type NoMethod KubeletCertInfo
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // KubernetesDashboard: Configuration for the Kubernetes Dashboard.
 type KubernetesDashboard struct {
 	// Disabled: Whether the Kubernetes Dashboard is enabled for this cluster.
@@ -4352,6 +4710,12 @@ type LinuxNodeConfig struct {
 	//   "CGROUP_MODE_V2" - CGROUP_MODE_V2 specifies to use cgroupv2 for the cgroup
 	// configuration on the node image.
 	CgroupMode string `json:"cgroupMode,omitempty"`
+	// CustomNodeInit: Optional. Allow users to run arbitrary bash script or
+	// container on the node.
+	CustomNodeInit *CustomNodeInit `json:"customNodeInit,omitempty"`
+	// DiskIoScheduler: Optional. Controls the configuration for the disk IO
+	// scheduler.
+	DiskIoScheduler *DiskIoScheduler `json:"diskIoScheduler,omitempty"`
 	// Hugepages: Optional. Amounts for 2M and 1G hugepages
 	Hugepages *HugepagesConfig `json:"hugepages,omitempty"`
 	// NodeKernelModuleLoading: Optional. Configuration for kernel module loading
@@ -4359,6 +4723,9 @@ type LinuxNodeConfig struct {
 	// Container-Optimized OS image that enforces kernel module signature
 	// verification.
 	NodeKernelModuleLoading *NodeKernelModuleLoading `json:"nodeKernelModuleLoading,omitempty"`
+	// NodeVfioConfig: Optional. Contains VFIO-related configurations for this
+	// node.
+	NodeVfioConfig *NodeVfioConfig `json:"nodeVfioConfig,omitempty"`
 	// SwapConfig: Optional. Enables and configures swap space on nodes. If
 	// omitted, swap is disabled.
 	SwapConfig *SwapConfig `json:"swapConfig,omitempty"`
@@ -4366,15 +4733,18 @@ type LinuxNodeConfig struct {
 	// running on the nodes. The following parameters are supported.
 	// net.core.busy_poll net.core.busy_read net.core.netdev_max_backlog
 	// net.core.rmem_max net.core.rmem_default net.core.wmem_default
-	// net.core.wmem_max net.core.optmem_max net.core.somaxconn net.ipv4.tcp_rmem
-	// net.ipv4.tcp_wmem net.ipv4.tcp_tw_reuse net.ipv4.tcp_mtu_probing
-	// net.ipv4.tcp_max_orphans net.ipv4.tcp_max_tw_buckets
-	// net.ipv4.tcp_syn_retries net.ipv4.tcp_ecn net.ipv4.tcp_congestion_control
-	// net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_buckets
+	// net.core.wmem_max net.core.optmem_max net.core.somaxconn
+	// net.ipv4.neigh.default.gc_thresh1 net.ipv4.neigh.default.gc_thresh2
+	// net.ipv4.neigh.default.gc_thresh3 net.ipv4.tcp_rmem net.ipv4.tcp_wmem
+	// net.ipv4.tcp_tw_reuse net.ipv4.tcp_mtu_probing net.ipv4.tcp_max_orphans
+	// net.ipv4.tcp_max_tw_buckets net.ipv4.tcp_syn_retries net.ipv4.tcp_ecn
+	// net.ipv4.tcp_congestion_control net.netfilter.nf_conntrack_max
+	// net.netfilter.nf_conntrack_buckets
 	// net.netfilter.nf_conntrack_tcp_timeout_close_wait
 	// net.netfilter.nf_conntrack_tcp_timeout_time_wait
 	// net.netfilter.nf_conntrack_tcp_timeout_established
-	// net.netfilter.nf_conntrack_acct kernel.shmmni kernel.shmmax kernel.shmall
+	// net.netfilter.nf_conntrack_acct kernel.keys.maxkeys kernel.keys.maxbytes
+	// kernel.shmmni kernel.shmmax kernel.shmall kernel.core_pattern
 	// kernel.perf_event_paranoid kernel.sched_rt_runtime_us
 	// kernel.softlockup_panic kernel.yama.ptrace_scope kernel.kptr_restrict
 	// kernel.dmesg_restrict kernel.sysrq fs.aio-max-nr fs.file-max
@@ -4614,6 +4984,7 @@ type LoggingComponentConfig struct {
 	//   "KCP_SSHD" - kcp-sshd
 	//   "KCP_CONNECTION" - kcp connection logs
 	//   "KCP_HPA" - horizontal pod autoscaler decision logs
+	//   "KCP_VPA" - vertical pod autoscaler decision logs
 	EnableComponents []string `json:"enableComponents,omitempty"`
 	// ForceSendFields is a list of field names (e.g. "EnableComponents") to
 	// unconditionally include in API requests. By default, fields with empty or
@@ -4804,6 +5175,11 @@ type MaintenanceWindow struct {
 	// MaintenanceExclusions: Exceptions to maintenance window. Non-emergency
 	// maintenance should not occur in these windows.
 	MaintenanceExclusions map[string]TimeWindow `json:"maintenanceExclusions,omitempty"`
+	// RecurringMaintenanceWindow: RecurringMaintenanceWindow specifies some number
+	// of recurring time periods for maintenance to occur. The time windows may be
+	// overlapping. If no maintenance windows are set, maintenance can occur at any
+	// time. Alternative to RecurringWindow, with renamed fields.
+	RecurringMaintenanceWindow *RecurringMaintenanceWindow `json:"recurringMaintenanceWindow,omitempty"`
 	// RecurringWindow: RecurringWindow specifies some number of recurring time
 	// periods for maintenance to occur. The time windows may be overlapping. If no
 	// maintenance windows are set, maintenance can occur at any time.
@@ -5195,6 +5571,9 @@ type NetworkConfig struct {
 	// documentation](https://cloud.google.com/kubernetes-engine/docs/how-to/datapla
 	// ne-v2) for more.
 	DatapathProvider string `json:"datapathProvider,omitempty"`
+	// DataplaneV2Config: Optional. DataplaneV2Config specifies the DPv2
+	// configuration.
+	DataplaneV2Config *DataplaneV2Config `json:"dataplaneV2Config,omitempty"`
 	// DefaultEnablePrivateNodes: Controls whether by default nodes have private IP
 	// addresses only. It is invalid to specify both
 	// PrivateClusterConfig.enablePrivateNodes and this field at the same time. To
@@ -5600,6 +5979,9 @@ type NodeConfig struct {
 	// tenant nodes
 	// (https://cloud.google.com/compute/docs/nodes/sole-tenant-nodes).
 	NodeGroup string `json:"nodeGroup,omitempty"`
+	// NodeImageConfig: The node image configuration to use for this node pool.
+	// Note that this is only applicable for node pools using image_type=CUSTOM.
+	NodeImageConfig *CustomImageConfig `json:"nodeImageConfig,omitempty"`
 	// OauthScopes: The set of Google API scopes to be made available on all of the
 	// node VMs under the "default" service account. The following scopes are
 	// recommended, but not required, and by default are not included: *
@@ -5710,24 +6092,56 @@ func (s NodeConfigDefaults) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
-// NodeDrainConfig: NodeDrainConfig contains the node drain related
-// configurations for this node pool.
-type NodeDrainConfig struct {
-	// RespectPdbDuringNodePoolDeletion: Whether to respect PDB during node pool
-	// deletion.
-	RespectPdbDuringNodePoolDeletion bool `json:"respectPdbDuringNodePoolDeletion,omitempty"`
-	// ForceSendFields is a list of field names (e.g.
-	// "RespectPdbDuringNodePoolDeletion") to unconditionally include in API
-	// requests. By default, fields with empty or default values are omitted from
-	// API requests. See
+// NodeCreationConfig: NodeCreationConfig defines the settings of node creation
+// mode.
+type NodeCreationConfig struct {
+	// NodeCreationMode: The mode of node creation.
+	//
+	// Possible values:
+	//   "MODE_UNSPECIFIED" - When no user input is provided.
+	//   "VIA_KUBELET" - Kubelet registers itself.
+	//   "VIA_CONTROL_PLANE" - gcp-controller-manager automatically creates the
+	// node object after CSR approval.
+	NodeCreationMode string `json:"nodeCreationMode,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "NodeCreationMode") to
+	// unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
 	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
 	// details.
 	ForceSendFields []string `json:"-"`
-	// NullFields is a list of field names (e.g.
-	// "RespectPdbDuringNodePoolDeletion") to include in API requests with the JSON
-	// null value. By default, fields with empty values are omitted from API
-	// requests. See https://pkg.go.dev/google.golang.org/api#hdr-NullFields for
-	// more details.
+	// NullFields is a list of field names (e.g. "NodeCreationMode") to include in
+	// API requests with the JSON null value. By default, fields with empty values
+	// are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s NodeCreationConfig) MarshalJSON() ([]byte, error) {
+	type NoMethod NodeCreationConfig
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// NodeDrainConfig: NodeDrainConfig contains the node drain related
+// configurations for this node pool.
+type NodeDrainConfig struct {
+	// GraceTerminationDuration: The duration of the grace termination period for
+	// node drain.
+	GraceTerminationDuration string `json:"graceTerminationDuration,omitempty"`
+	// PdbTimeoutDuration: The duration of the PDB timeout period for node drain.
+	PdbTimeoutDuration string `json:"pdbTimeoutDuration,omitempty"`
+	// RespectPdbDuringNodePoolDeletion: Whether to respect PDB during node pool
+	// deletion.
+	RespectPdbDuringNodePoolDeletion bool `json:"respectPdbDuringNodePoolDeletion,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "GraceTerminationDuration")
+	// to unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "GraceTerminationDuration") to
+	// include in API requests with the JSON null value. By default, fields with
+	// empty values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
 	NullFields []string `json:"-"`
 }
 
@@ -6015,6 +6429,8 @@ type NodeNetworkConfig struct {
 	// enable_private_nodes is not specified, then the value is derived from
 	// Cluster.NetworkConfig.default_enable_private_nodes
 	EnablePrivateNodes bool `json:"enablePrivateNodes,omitempty"`
+	// Network: Optional. Immutable. The VPC network for the node pool.
+	Network string `json:"network,omitempty"`
 	// NetworkPerformanceConfig: Network bandwidth tier configuration.
 	NetworkPerformanceConfig *NetworkPerformanceConfig `json:"networkPerformanceConfig,omitempty"`
 	// NetworkTierConfig: Output only. The network tier configuration for the node
@@ -6107,13 +6523,14 @@ type NodePool struct {
 	Autoscaling *NodePoolAutoscaling `json:"autoscaling,omitempty"`
 	// BestEffortProvisioning: Enable best effort provisioning for nodes
 	BestEffortProvisioning *BestEffortProvisioning `json:"bestEffortProvisioning,omitempty"`
-	// Conditions: Which conditions caused the current node pool state.
+	// Conditions: Output only. Which conditions caused the current node pool
+	// state.
 	Conditions []*StatusCondition `json:"conditions,omitempty"`
 	// Config: The node configuration of the pool.
 	Config *NodeConfig `json:"config,omitempty"`
-	// Etag: This checksum is computed by the server based on the value of node
-	// pool fields, and may be sent on update requests to ensure the client has an
-	// up-to-date value before proceeding.
+	// Etag: Output only. This checksum is computed by the server based on the
+	// value of node pool fields, and may be sent on update requests to ensure the
+	// client has an up-to-date value before proceeding.
 	Etag string `json:"etag,omitempty"`
 	// InitialNodeCount: The initial node count for the pool. You must ensure that
 	// your Compute Engine resource quota (https://cloud.google.com/compute/quotas)
@@ -6126,6 +6543,9 @@ type NodePool struct {
 	// associated with this node pool. During the node pool blue-green upgrade
 	// operation, the URLs contain both blue and green resources.
 	InstanceGroupUrls []string `json:"instanceGroupUrls,omitempty"`
+	// KubeletCertInfo: Output only. Contains expiry information about the kubelet
+	// certificate.
+	KubeletCertInfo *KubeletCertInfo `json:"kubeletCertInfo,omitempty"`
 	// Locations: The list of Google Compute Engine zones
 	// (https://cloud.google.com/compute/docs/zones#available) in which the
 	// NodePool's nodes should be located. If this value is unspecified during node
@@ -6134,6 +6554,9 @@ type NodePool struct {
 	// value will be used, instead. Warning: changing node pool locations will
 	// result in nodes being added and/or removed.
 	Locations []string `json:"locations,omitempty"`
+	// MaintenancePolicy: Optional. Specifies the maintenance policy for the node
+	// pool.
+	MaintenancePolicy *NodePoolMaintenancePolicy `json:"maintenancePolicy,omitempty"`
 	// Management: NodeManagement configuration for this NodePool.
 	Management *NodeManagement `json:"management,omitempty"`
 	// MaxPodsConstraint: The constraint on the maximum number of pods that can be
@@ -6342,6 +6765,29 @@ func (s NodePoolLoggingConfig) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// NodePoolMaintenancePolicy: Defines the maintenance policy for the node pool.
+type NodePoolMaintenancePolicy struct {
+	// ExclusionUntilEndOfSupport: Optional. The exclusion until end of support for
+	// the node pool.
+	ExclusionUntilEndOfSupport *ExclusionUntilEndOfSupport `json:"exclusionUntilEndOfSupport,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "ExclusionUntilEndOfSupport")
+	// to unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "ExclusionUntilEndOfSupport") to
+	// include in API requests with the JSON null value. By default, fields with
+	// empty values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s NodePoolMaintenancePolicy) MarshalJSON() ([]byte, error) {
+	type NoMethod NodePoolMaintenancePolicy
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // NodePoolUpgradeInfo: NodePoolUpgradeInfo contains the upgrade information of
 // a node pool.
 type NodePoolUpgradeInfo struct {
@@ -6354,6 +6800,9 @@ type NodePoolUpgradeInfo struct {
 	// upgrade is paused.
 	//   "UPGRADE_PAUSED" - UPGRADE_PAUSED indicates the upgrade is paused.
 	AutoUpgradeStatus []string `json:"autoUpgradeStatus,omitempty"`
+	// CustomImageInfo: Output only. Upgrade info for the node pool specific to the
+	// usage of custom images.
+	CustomImageInfo *CustomImageInfo `json:"customImageInfo,omitempty"`
 	// EndOfExtendedSupportTimestamp: The node pool's current minor version's end
 	// of extended support timestamp.
 	EndOfExtendedSupportTimestamp string `json:"endOfExtendedSupportTimestamp,omitempty"`
@@ -6401,6 +6850,29 @@ type NodePoolUpgradeInfo struct {
 
 func (s NodePoolUpgradeInfo) MarshalJSON() ([]byte, error) {
 	type NoMethod NodePoolUpgradeInfo
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// NodeReadinessConfig: Configuration for the GKE Node Readiness Controller.
+type NodeReadinessConfig struct {
+	// Enabled: Optional. Whether the GKE Node Readiness Controller is enabled for
+	// this cluster.
+	Enabled bool `json:"enabled,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Enabled") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Enabled") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s NodeReadinessConfig) MarshalJSON() ([]byte, error) {
+	type NoMethod NodeReadinessConfig
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -6460,6 +6932,38 @@ type NodeTaints struct {
 
 func (s NodeTaints) MarshalJSON() ([]byte, error) {
 	type NoMethod NodeTaints
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// NodeVfioConfig: Configuration settings for VFIO (Virtual Function I/O) on a
+// node. VFIO allows safe, unprivileged, userspace drivers to access I/O
+// devices.
+type NodeVfioConfig struct {
+	// DmaEntryLimit: Optional. Specifies the maximum number of DMA entries (pages)
+	// that can be mapped by the VFIO IOMMU type 1 driver for a container. This
+	// limit affects the total amount of host memory that can be pinned for direct
+	// device access, which is often critical for high-performance devices like
+	// TPUs and GPUs. This setting corresponds to the kernel parameter at:
+	// `/sys/module/vfio_iommu_type1/parameters/dma_entry_limit`. The default value
+	// in the kernel is `65535`. Higher values may be needed for workloads mapping
+	// large memory regions. Supported values are integers between `65535` and
+	// `4194304`.
+	DmaEntryLimit int64 `json:"dmaEntryLimit,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "DmaEntryLimit") to
+	// unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "DmaEntryLimit") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s NodeVfioConfig) MarshalJSON() ([]byte, error) {
+	type NoMethod NodeVfioConfig
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -7236,6 +7740,45 @@ func (s RayOperatorConfig) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// RecurringMaintenanceWindow: Represents an arbitrary window of time that
+// recurs. Will replace RecurringTimeWindow.
+type RecurringMaintenanceWindow struct {
+	// DelayUntil: Optional. Specifies the date before which will not be scheduled.
+	// Depending on the recurrence, this may be the date the first window appears.
+	// Days are measured in the UTC timezone. This setting must be used when
+	// INTERVAL>1 or FREQ=WEEKLY/MONTHLY and no BYDAY specified.
+	DelayUntil *Date `json:"delayUntil,omitempty"`
+	// Recurrence: Required. An RRULE
+	// (https://tools.ietf.org/html/rfc5545#section-3.8.5.3) for how this window
+	// recurs. For example, to have something repeat every weekday, you'd use:
+	// `FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR` To repeat some window daily (equivalent
+	// to the DailyMaintenanceWindow): `FREQ=DAILY` For the first weekend of every
+	// month: `FREQ=MONTHLY;BYSETPOS=1;BYDAY=SA,SU` The FREQ values of HOURLY,
+	// MINUTELY, and SECONDLY are not supported.
+	Recurrence string `json:"recurrence,omitempty"`
+	// WindowDuration: Required. Duration of the window.
+	WindowDuration string `json:"windowDuration,omitempty"`
+	// WindowStartTime: Required. Start time of the window on days that it is
+	// scheduled, assuming UTC timezone.
+	WindowStartTime *TimeOfDay `json:"windowStartTime,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "DelayUntil") to
+	// unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "DelayUntil") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s RecurringMaintenanceWindow) MarshalJSON() ([]byte, error) {
+	type NoMethod RecurringMaintenanceWindow
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // RecurringTimeWindow: Represents an arbitrary window of time that recurs.
 type RecurringTimeWindow struct {
 	// Recurrence: An RRULE (https://tools.ietf.org/html/rfc5545#section-3.8.5.3)
@@ -7341,7 +7884,8 @@ type ReleaseChannel struct {
 	// to.
 	//
 	// Possible values:
-	//   "UNSPECIFIED" - No channel specified.
+	//   "UNSPECIFIED" - Deprecated: No channel specified. it will be removed in
+	// the future, use RAPID, REGULAR, STABLE or EXTENDED instead.
 	//   "RAPID" - RAPID channel is offered on an early access basis for customers
 	// who want to test new releases. WARNING: Versions available in the RAPID
 	// Channel may be subject to unresolved issues with no known workaround and are
@@ -7379,7 +7923,8 @@ type ReleaseChannelConfig struct {
 	// Channel: The release channel this configuration applies to.
 	//
 	// Possible values:
-	//   "UNSPECIFIED" - No channel specified.
+	//   "UNSPECIFIED" - Deprecated: No channel specified. it will be removed in
+	// the future, use RAPID, REGULAR, STABLE or EXTENDED instead.
 	//   "RAPID" - RAPID channel is offered on an early access basis for customers
 	// who want to test new releases. WARNING: Versions available in the RAPID
 	// Channel may be subject to unresolved issues with no known workaround and are
@@ -7393,6 +7938,8 @@ type ReleaseChannelConfig struct {
 	// availability for versions which are known to be stable and reliable in
 	// production.
 	Channel string `json:"channel,omitempty"`
+	// CustomVersions: Output only. List of custom versions for the channel.
+	CustomVersions []string `json:"customVersions,omitempty"`
 	// DefaultVersion: The default version for newly created clusters on the
 	// channel.
 	DefaultVersion string `json:"defaultVersion,omitempty"`
@@ -7432,6 +7979,8 @@ type ReservationAffinity struct {
 	//   "ANY_RESERVATION" - Consume any reservation available.
 	//   "SPECIFIC_RESERVATION" - Must consume from a specific reservation. Must
 	// specify key value fields for specifying the reservations.
+	//   "ANY_RESERVATION_THEN_FAIL" - Consume any reservation available. If no
+	// reservation is available, fail the node creation.
 	ConsumeReservationType string `json:"consumeReservationType,omitempty"`
 	// Key: Corresponds to the label key of a reservation resource. To target a
 	// SPECIFIC_RESERVATION by name, specify
@@ -7610,6 +8159,67 @@ type RollbackNodePoolUpgradeRequest struct {
 
 func (s RollbackNodePoolUpgradeRequest) MarshalJSON() ([]byte, error) {
 	type NoMethod RollbackNodePoolUpgradeRequest
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// RollbackSafeUpgrade: RollbackSafeUpgrade is the configuration for the
+// rollback safe upgrade.
+type RollbackSafeUpgrade struct {
+	// ControlPlaneSoakDuration: Optional. A user-defined period for the cluster
+	// remains in the rollbackable state. ex: {seconds: 21600}.
+	ControlPlaneSoakDuration string `json:"controlPlaneSoakDuration,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "ControlPlaneSoakDuration")
+	// to unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "ControlPlaneSoakDuration") to
+	// include in API requests with the JSON null value. By default, fields with
+	// empty values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s RollbackSafeUpgrade) MarshalJSON() ([]byte, error) {
+	type NoMethod RollbackSafeUpgrade
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// RollbackSafeUpgradeStatus: RollbackSafeUpgradeStatus contains the
+// rollback-safe upgrade status of a cluster.
+type RollbackSafeUpgradeStatus struct {
+	// ControlPlaneUpgradeRollbackEndTime: Output only. The rollback-safe mode
+	// expiration time.
+	ControlPlaneUpgradeRollbackEndTime string `json:"controlPlaneUpgradeRollbackEndTime,omitempty"`
+	// Mode: Output only. The mode of the rollback-safe upgrade.
+	//
+	// Possible values:
+	//   "MODE_UNSPECIFIED" - MODE_UNSPECIFIED means it's in regular upgrade mode.
+	//   "KCP_MINOR_UPGRADE_ROLLBACK_SAFE_MODE" -
+	// KCP_MINOR_UPGRADE_ROLLBACK_SAFE_MODE means it's in rollback-safe mode after
+	// a KCP minor version step-one upgrade.
+	Mode string `json:"mode,omitempty"`
+	// PreviousVersion: Output only. The GKE version that the cluster previously
+	// used before step-one upgrade.
+	PreviousVersion string `json:"previousVersion,omitempty"`
+	// ForceSendFields is a list of field names (e.g.
+	// "ControlPlaneUpgradeRollbackEndTime") to unconditionally include in API
+	// requests. By default, fields with empty or default values are omitted from
+	// API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g.
+	// "ControlPlaneUpgradeRollbackEndTime") to include in API requests with the
+	// JSON null value. By default, fields with empty values are omitted from API
+	// requests. See https://pkg.go.dev/google.golang.org/api#hdr-NullFields for
+	// more details.
+	NullFields []string `json:"-"`
+}
+
+func (s RollbackSafeUpgradeStatus) MarshalJSON() ([]byte, error) {
+	type NoMethod RollbackSafeUpgradeStatus
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -8515,6 +9125,29 @@ func (s SliceControllerConfig) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// SlurmOperatorConfig: Configuration for the Slurm Operator.
+type SlurmOperatorConfig struct {
+	// Enabled: When enabled, it runs a Slurm Operator that manages the set of
+	// compute pods for Slurm Cluster.
+	Enabled bool `json:"enabled,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Enabled") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Enabled") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s SlurmOperatorConfig) MarshalJSON() ([]byte, error) {
+	type NoMethod SlurmOperatorConfig
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // SoleTenantConfig: SoleTenantConfig contains the NodeAffinities to specify
 // what shared sole tenant node groups should back the node pool.
 type SoleTenantConfig struct {
@@ -8893,6 +9526,42 @@ func (s TaintConfig) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
+// TimeOfDay: Represents a time of day. The date and time zone are either not
+// significant or are specified elsewhere. An API may choose to allow leap
+// seconds. Related types are google.type.Date and `google.protobuf.Timestamp`.
+type TimeOfDay struct {
+	// Hours: Hours of a day in 24 hour format. Must be greater than or equal to 0
+	// and typically must be less than or equal to 23. An API may choose to allow
+	// the value "24:00:00" for scenarios like business closing time.
+	Hours int64 `json:"hours,omitempty"`
+	// Minutes: Minutes of an hour. Must be greater than or equal to 0 and less
+	// than or equal to 59.
+	Minutes int64 `json:"minutes,omitempty"`
+	// Nanos: Fractions of seconds, in nanoseconds. Must be greater than or equal
+	// to 0 and less than or equal to 999,999,999.
+	Nanos int64 `json:"nanos,omitempty"`
+	// Seconds: Seconds of a minute. Must be greater than or equal to 0 and
+	// typically must be less than or equal to 59. An API may allow the value 60 if
+	// it allows leap-seconds.
+	Seconds int64 `json:"seconds,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "Hours") to unconditionally
+	// include in API requests. By default, fields with empty or default values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "Hours") to include in API
+	// requests with the JSON null value. By default, fields with empty values are
+	// omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s TimeOfDay) MarshalJSON() ([]byte, error) {
+	type NoMethod TimeOfDay
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
 // TimeWindow: Represents an arbitrary window of time.
 type TimeWindow struct {
 	// EndTime: The time that the window ends. The end time should take place after
@@ -8921,9 +9590,12 @@ func (s TimeWindow) MarshalJSON() ([]byte, error) {
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
-// TopologyManager: TopologyManager defines the configuration options for
-// Topology Manager feature. See
-// https://kubernetes.io/docs/tasks/administer-cluster/topology-manager/
+// TopologyManager: TopologyManager defines the configuration options for the
+// `kubelet` Topology Manager component
+// (https://kubernetes.io/docs/tasks/administer-cluster/topology-manager/). For
+// more information about the supported machine types and versions for the
+// Topology Manager in GKE, see Customizing node system configuration
+// (https://docs.cloud.google.com/kubernetes-engine/docs/how-to/node-system-config#kubelet-resource-managers).
 type TopologyManager struct {
 	// Policy: Configures the strategy for resource alignment. Allowed values are:
 	// * none: the default policy, and does not perform any topology alignment. *
@@ -9113,6 +9785,12 @@ type UpdateNodePoolRequest struct {
 	GcfsConfig *GcfsConfig `json:"gcfsConfig,omitempty"`
 	// Gvnic: Enable or disable gvnic on the node pool.
 	Gvnic *VirtualNIC `json:"gvnic,omitempty"`
+	// Image: The desired name of the image name to use for this node. This is used
+	// to create clusters using a custom image.
+	Image string `json:"image,omitempty"`
+	// ImageProject: The project containing the desired image to use for this node
+	// pool. This is used to create clusters using a custom image.
+	ImageProject string `json:"imageProject,omitempty"`
 	// ImageType: Required. The desired image type for the node pool. Please see
 	// https://cloud.google.com/kubernetes-engine/docs/concepts/node-images for
 	// available image types.
@@ -9145,6 +9823,9 @@ type UpdateNodePoolRequest struct {
 	// pool. Initiates an upgrade operation that migrates the nodes in the node
 	// pool to the specified machine type.
 	MachineType string `json:"machineType,omitempty"`
+	// MaintenancePolicy: Optional. Specifies the maintenance policy for the node
+	// pool, including maintenance exclusion options.
+	MaintenancePolicy *NodePoolMaintenancePolicy `json:"maintenancePolicy,omitempty"`
 	// MaxRunDuration: The maximum duration for the nodes to exist. If unspecified,
 	// the nodes can exist indefinitely.
 	MaxRunDuration string `json:"maxRunDuration,omitempty"`
@@ -9189,6 +9870,8 @@ type UpdateNodePoolRequest struct {
 	// If this field is not present, the tags will not be changed. Otherwise, the
 	// existing network tags will be *replaced* with the provided tags.
 	Tags *NetworkTags `json:"tags,omitempty"`
+	// TaintConfig: The taint configuration for the node pool.
+	TaintConfig *TaintConfig `json:"taintConfig,omitempty"`
 	// Taints: The desired node taints to be applied to all nodes in the node pool.
 	// If this field is not present, the taints will not be changed. Otherwise, the
 	// existing node taints will be *replaced* with the provided taints.
@@ -9265,6 +9948,9 @@ func (s UpgradeAvailableEvent) MarshalJSON() ([]byte, error) {
 type UpgradeDetails struct {
 	// EndTime: The end timestamp of the upgrade.
 	EndTime string `json:"endTime,omitempty"`
+	// InitialEmulatedVersion: Output only. The emulated version before the
+	// upgrade.
+	InitialEmulatedVersion string `json:"initialEmulatedVersion,omitempty"`
 	// InitialVersion: The version before the upgrade.
 	InitialVersion string `json:"initialVersion,omitempty"`
 	// StartTime: The start timestamp of the upgrade.
@@ -9285,6 +9971,8 @@ type UpgradeDetails struct {
 	//   "CANCELED" - Upgrade has been canceled.
 	//   "RUNNING" - Upgrade is running.
 	State string `json:"state,omitempty"`
+	// TargetEmulatedVersion: Output only. The emulated version after the upgrade.
+	TargetEmulatedVersion string `json:"targetEmulatedVersion,omitempty"`
 	// TargetVersion: The version after the upgrade.
 	TargetVersion string `json:"targetVersion,omitempty"`
 	// ForceSendFields is a list of field names (e.g. "EndTime") to unconditionally
@@ -9308,6 +9996,9 @@ func (s UpgradeDetails) MarshalJSON() ([]byte, error) {
 // UpgradeEvent: UpgradeEvent is a notification sent to customers by the
 // cluster server when a resource is upgrading.
 type UpgradeEvent struct {
+	// CurrentEmulatedVersion: Output only. The current emulated version before the
+	// upgrade.
+	CurrentEmulatedVersion string `json:"currentEmulatedVersion,omitempty"`
 	// CurrentVersion: The current version before the upgrade.
 	CurrentVersion string `json:"currentVersion,omitempty"`
 	// Operation: The operation associated with this upgrade.
@@ -9325,17 +10016,20 @@ type UpgradeEvent struct {
 	//   "MASTER" - Master / control plane
 	//   "NODE_POOL" - Node pool
 	ResourceType string `json:"resourceType,omitempty"`
+	// TargetEmulatedVersion: Output only. The target emulated version for the
+	// upgrade.
+	TargetEmulatedVersion string `json:"targetEmulatedVersion,omitempty"`
 	// TargetVersion: The target version for the upgrade.
 	TargetVersion string `json:"targetVersion,omitempty"`
-	// ForceSendFields is a list of field names (e.g. "CurrentVersion") to
+	// ForceSendFields is a list of field names (e.g. "CurrentEmulatedVersion") to
 	// unconditionally include in API requests. By default, fields with empty or
 	// default values are omitted from API requests. See
 	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
 	// details.
 	ForceSendFields []string `json:"-"`
-	// NullFields is a list of field names (e.g. "CurrentVersion") to include in
-	// API requests with the JSON null value. By default, fields with empty values
-	// are omitted from API requests. See
+	// NullFields is a list of field names (e.g. "CurrentEmulatedVersion") to
+	// include in API requests with the JSON null value. By default, fields with
+	// empty values are omitted from API requests. See
 	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
 	NullFields []string `json:"-"`
 }
@@ -9348,6 +10042,9 @@ func (s UpgradeEvent) MarshalJSON() ([]byte, error) {
 // UpgradeInfoEvent: UpgradeInfoEvent is a notification sent to customers about
 // the upgrade information of a resource.
 type UpgradeInfoEvent struct {
+	// CurrentEmulatedVersion: Output only. The current emulated version before the
+	// upgrade.
+	CurrentEmulatedVersion string `json:"currentEmulatedVersion,omitempty"`
 	// CurrentVersion: The current version before the upgrade.
 	CurrentVersion string `json:"currentVersion,omitempty"`
 	// Description: A brief description of the event.
@@ -9403,17 +10100,20 @@ type UpgradeInfoEvent struct {
 	//   "FAILED" - FAILED indicates the upgrade has failed.
 	//   "CANCELED" - CANCELED indicates the upgrade has canceled.
 	State string `json:"state,omitempty"`
+	// TargetEmulatedVersion: Output only. The target emulated version for the
+	// upgrade.
+	TargetEmulatedVersion string `json:"targetEmulatedVersion,omitempty"`
 	// TargetVersion: The target version for the upgrade.
 	TargetVersion string `json:"targetVersion,omitempty"`
-	// ForceSendFields is a list of field names (e.g. "CurrentVersion") to
+	// ForceSendFields is a list of field names (e.g. "CurrentEmulatedVersion") to
 	// unconditionally include in API requests. By default, fields with empty or
 	// default values are omitted from API requests. See
 	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
 	// details.
 	ForceSendFields []string `json:"-"`
-	// NullFields is a list of field names (e.g. "CurrentVersion") to include in
-	// API requests with the JSON null value. By default, fields with empty values
-	// are omitted from API requests. See
+	// NullFields is a list of field names (e.g. "CurrentEmulatedVersion") to
+	// include in API requests with the JSON null value. By default, fields with
+	// empty values are omitted from API requests. See
 	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
 	NullFields []string `json:"-"`
 }
@@ -10208,6 +10908,112 @@ func (c *ProjectsLocationsClustersCheckAutopilotCompatibilityCall) Do(opts ...go
 		return nil, err
 	}
 	c.s.logger.DebugContext(c.ctx_, "api response", "serviceName", apiName, "rpcName", "container.projects.locations.clusters.checkAutopilotCompatibility", "response", internallog.HTTPResponse(res, b))
+	return ret, nil
+}
+
+type ProjectsLocationsClustersCompleteControlPlaneUpgradeCall struct {
+	s                                  *Service
+	name                               string
+	completecontrolplaneupgraderequest *CompleteControlPlaneUpgradeRequest
+	urlParams_                         gensupport.URLParams
+	ctx_                               context.Context
+	header_                            http.Header
+}
+
+// CompleteControlPlaneUpgrade: CompleteControlPlaneUpgrade completes the
+// rollback-safe upgrade by performing the step two upgrade for a specific
+// cluster.
+//
+//   - name: The name (project, location, cluster) of the cluster to complete
+//     upgrade. Specified in the format `projects/*/locations/*/clusters/*`.
+func (r *ProjectsLocationsClustersService) CompleteControlPlaneUpgrade(name string, completecontrolplaneupgraderequest *CompleteControlPlaneUpgradeRequest) *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall {
+	c := &ProjectsLocationsClustersCompleteControlPlaneUpgradeCall{s: r.s, urlParams_: make(gensupport.URLParams)}
+	c.name = name
+	c.completecontrolplaneupgraderequest = completecontrolplaneupgraderequest
+	return c
+}
+
+// Fields allows partial responses to be retrieved. See
+// https://developers.google.com/gdata/docs/2.0/basics#PartialResponse for more
+// details.
+func (c *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall) Fields(s ...googleapi.Field) *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall {
+	c.urlParams_.Set("fields", googleapi.CombineFields(s))
+	return c
+}
+
+// Context sets the context to be used in this call's Do method.
+func (c *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall) Context(ctx context.Context) *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall {
+	c.ctx_ = ctx
+	return c
+}
+
+// Header returns a http.Header that can be modified by the caller to add
+// headers to the request.
+func (c *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall) Header() http.Header {
+	if c.header_ == nil {
+		c.header_ = make(http.Header)
+	}
+	return c.header_
+}
+
+func (c *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall) doRequest(alt string) (*http.Response, error) {
+	reqHeaders := gensupport.SetHeaders(c.s.userAgent(), "application/json", c.header_)
+	body, err := googleapi.WithoutDataWrapper.JSONBuffer(c.completecontrolplaneupgraderequest)
+	if err != nil {
+		return nil, err
+	}
+	c.urlParams_.Set("alt", alt)
+	c.urlParams_.Set("prettyPrint", "false")
+	urls := googleapi.ResolveRelative(c.s.BasePath, "v1/{+name}:completeControlPlaneUpgrade")
+	urls += "?" + c.urlParams_.Encode()
+	req, err := http.NewRequest("POST", urls, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = reqHeaders
+	googleapi.Expand(req.URL, map[string]string{
+		"name": c.name,
+	})
+	c.s.logger.DebugContext(c.ctx_, "api request", "serviceName", apiName, "rpcName", "container.projects.locations.clusters.completeControlPlaneUpgrade", "request", internallog.HTTPRequest(req, body.Bytes()))
+	return gensupport.SendRequest(c.ctx_, c.s.client, req)
+}
+
+// Do executes the "container.projects.locations.clusters.completeControlPlaneUpgrade" call.
+// Any non-2xx status code is an error. Response headers are in either
+// *Operation.ServerResponse.Header or (if a response was returned at all) in
+// error.(*googleapi.Error).Header. Use googleapi.IsNotModified to check
+// whether the returned error was because http.StatusNotModified was returned.
+func (c *ProjectsLocationsClustersCompleteControlPlaneUpgradeCall) Do(opts ...googleapi.CallOption) (*Operation, error) {
+	gensupport.SetOptions(c.urlParams_, opts...)
+	res, err := c.doRequest("json")
+	if res != nil && res.StatusCode == http.StatusNotModified {
+		if res.Body != nil {
+			res.Body.Close()
+		}
+		return nil, gensupport.WrapError(&googleapi.Error{
+			Code:   res.StatusCode,
+			Header: res.Header,
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer googleapi.CloseBody(res)
+	if err := googleapi.CheckResponse(res); err != nil {
+		return nil, gensupport.WrapError(err)
+	}
+	ret := &Operation{
+		ServerResponse: googleapi.ServerResponse{
+			Header:         res.Header,
+			HTTPStatusCode: res.StatusCode,
+		},
+	}
+	target := &ret
+	b, err := gensupport.DecodeResponseBytes(target, res)
+	if err != nil {
+		return nil, err
+	}
+	c.s.logger.DebugContext(c.ctx_, "api response", "serviceName", apiName, "rpcName", "container.projects.locations.clusters.completeControlPlaneUpgrade", "response", internallog.HTTPResponse(res, b))
 	return ret, nil
 }
 
@@ -14308,6 +15114,112 @@ func (c *ProjectsZonesClustersAddonsCall) Do(opts ...googleapi.CallOption) (*Ope
 		return nil, err
 	}
 	c.s.logger.DebugContext(c.ctx_, "api response", "serviceName", apiName, "rpcName", "container.projects.zones.clusters.addons", "response", internallog.HTTPResponse(res, b))
+	return ret, nil
+}
+
+type ProjectsZonesClustersCompleteControlPlaneUpgradeCall struct {
+	s                                  *Service
+	name                               string
+	completecontrolplaneupgraderequest *CompleteControlPlaneUpgradeRequest
+	urlParams_                         gensupport.URLParams
+	ctx_                               context.Context
+	header_                            http.Header
+}
+
+// CompleteControlPlaneUpgrade: CompleteControlPlaneUpgrade completes the
+// rollback-safe upgrade by performing the step two upgrade for a specific
+// cluster.
+//
+//   - name: The name (project, location, cluster) of the cluster to complete
+//     upgrade. Specified in the format `projects/*/locations/*/clusters/*`.
+func (r *ProjectsZonesClustersService) CompleteControlPlaneUpgrade(name string, completecontrolplaneupgraderequest *CompleteControlPlaneUpgradeRequest) *ProjectsZonesClustersCompleteControlPlaneUpgradeCall {
+	c := &ProjectsZonesClustersCompleteControlPlaneUpgradeCall{s: r.s, urlParams_: make(gensupport.URLParams)}
+	c.name = name
+	c.completecontrolplaneupgraderequest = completecontrolplaneupgraderequest
+	return c
+}
+
+// Fields allows partial responses to be retrieved. See
+// https://developers.google.com/gdata/docs/2.0/basics#PartialResponse for more
+// details.
+func (c *ProjectsZonesClustersCompleteControlPlaneUpgradeCall) Fields(s ...googleapi.Field) *ProjectsZonesClustersCompleteControlPlaneUpgradeCall {
+	c.urlParams_.Set("fields", googleapi.CombineFields(s))
+	return c
+}
+
+// Context sets the context to be used in this call's Do method.
+func (c *ProjectsZonesClustersCompleteControlPlaneUpgradeCall) Context(ctx context.Context) *ProjectsZonesClustersCompleteControlPlaneUpgradeCall {
+	c.ctx_ = ctx
+	return c
+}
+
+// Header returns a http.Header that can be modified by the caller to add
+// headers to the request.
+func (c *ProjectsZonesClustersCompleteControlPlaneUpgradeCall) Header() http.Header {
+	if c.header_ == nil {
+		c.header_ = make(http.Header)
+	}
+	return c.header_
+}
+
+func (c *ProjectsZonesClustersCompleteControlPlaneUpgradeCall) doRequest(alt string) (*http.Response, error) {
+	reqHeaders := gensupport.SetHeaders(c.s.userAgent(), "application/json", c.header_)
+	body, err := googleapi.WithoutDataWrapper.JSONBuffer(c.completecontrolplaneupgraderequest)
+	if err != nil {
+		return nil, err
+	}
+	c.urlParams_.Set("alt", alt)
+	c.urlParams_.Set("prettyPrint", "false")
+	urls := googleapi.ResolveRelative(c.s.BasePath, "v1/{+name}:completeControlPlaneUpgrade")
+	urls += "?" + c.urlParams_.Encode()
+	req, err := http.NewRequest("POST", urls, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = reqHeaders
+	googleapi.Expand(req.URL, map[string]string{
+		"name": c.name,
+	})
+	c.s.logger.DebugContext(c.ctx_, "api request", "serviceName", apiName, "rpcName", "container.projects.zones.clusters.completeControlPlaneUpgrade", "request", internallog.HTTPRequest(req, body.Bytes()))
+	return gensupport.SendRequest(c.ctx_, c.s.client, req)
+}
+
+// Do executes the "container.projects.zones.clusters.completeControlPlaneUpgrade" call.
+// Any non-2xx status code is an error. Response headers are in either
+// *Operation.ServerResponse.Header or (if a response was returned at all) in
+// error.(*googleapi.Error).Header. Use googleapi.IsNotModified to check
+// whether the returned error was because http.StatusNotModified was returned.
+func (c *ProjectsZonesClustersCompleteControlPlaneUpgradeCall) Do(opts ...googleapi.CallOption) (*Operation, error) {
+	gensupport.SetOptions(c.urlParams_, opts...)
+	res, err := c.doRequest("json")
+	if res != nil && res.StatusCode == http.StatusNotModified {
+		if res.Body != nil {
+			res.Body.Close()
+		}
+		return nil, gensupport.WrapError(&googleapi.Error{
+			Code:   res.StatusCode,
+			Header: res.Header,
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer googleapi.CloseBody(res)
+	if err := googleapi.CheckResponse(res); err != nil {
+		return nil, gensupport.WrapError(err)
+	}
+	ret := &Operation{
+		ServerResponse: googleapi.ServerResponse{
+			Header:         res.Header,
+			HTTPStatusCode: res.StatusCode,
+		},
+	}
+	target := &ret
+	b, err := gensupport.DecodeResponseBytes(target, res)
+	if err != nil {
+		return nil, err
+	}
+	c.s.logger.DebugContext(c.ctx_, "api response", "serviceName", apiName, "rpcName", "container.projects.zones.clusters.completeControlPlaneUpgrade", "response", internallog.HTTPResponse(res, b))
 	return ret, nil
 }
 

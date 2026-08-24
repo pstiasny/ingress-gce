@@ -38,6 +38,7 @@ import (
 
 	nodetopologyv1 "github.com/GoogleCloudPlatform/gke-networking-api/apis/nodetopology/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/sets"
 	listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
@@ -49,6 +50,8 @@ import (
 	"k8s.io/ingress-gce/pkg/neg/syncers/dualstack"
 	"k8s.io/ingress-gce/pkg/neg/syncers/labels"
 	negtypes "k8s.io/ingress-gce/pkg/neg/types"
+	"k8s.io/ingress-gce/pkg/neg/types/shared"
+	"k8s.io/ingress-gce/pkg/negannotation"
 	"k8s.io/ingress-gce/pkg/utils/zonegetter"
 	"k8s.io/klog/v2"
 )
@@ -94,6 +97,8 @@ type transactionSyncer struct {
 
 	// customName indicates whether the NEG name is a generated one or custom one
 	customName bool
+	// manageLifecycle indicates whether the syncer manages creation of NEGs.
+	manageLifecycle bool
 
 	logger klog.Logger
 
@@ -150,6 +155,7 @@ func NewTransactionSyncer(
 	kubeSystemUID string,
 	syncerMetrics *metricscollector.SyncerMetrics,
 	customName bool,
+	manageLifecycle bool,
 	log klog.Logger,
 	lpConfig labels.PodLabelPropagationConfig,
 	enableDualStackNEG bool,
@@ -158,7 +164,12 @@ func NewTransactionSyncer(
 	negMetrics *metrics.NegMetrics,
 ) negtypes.NegSyncer {
 
-	logger := log.WithName("Syncer").WithValues("service", klog.KRef(negSyncerKey.Namespace, negSyncerKey.Name), "primaryNEGName", negSyncerKey.NegName)
+	logger := log.WithName("Syncer").WithValues("service", klog.KRef(negSyncerKey.Namespace, negSyncerKey.Name))
+	if negSyncerKey.IsBindingKey() {
+		logger = logger.WithValues("negBindingName", negSyncerKey.NEGBindingName)
+	} else {
+		logger = logger.WithValues("primaryNEGName", negSyncerKey.NegName)
+	}
 
 	// TransactionSyncer implements the syncer core
 	ts := &transactionSyncer{
@@ -178,6 +189,7 @@ func NewTransactionSyncer(
 		statusHandler:             statusHandler,
 		syncMetricsCollector:      syncerMetrics,
 		customName:                customName,
+		manageLifecycle:           manageLifecycle,
 		errorState:                false,
 		logger:                    logger,
 		enableDegradedMode:        flags.F.EnableDegradedMode,
@@ -286,23 +298,42 @@ func (s *transactionSyncer) syncInternalImpl() error {
 	// Only matters for L4 Local mode.
 	needInitDrainStatus := s.needInit && s.enableL4NEGDetachCancel && s.endpointsCalculator.Mode() == negtypes.L4LocalMode
 
+	var ensureErr error
+	var ensuredSubnetZones map[string]sets.Set[string]
 	if s.needInit || topologyChange {
 		s.logger.Info("Need to ensure network endpoint groups", "needInit", s.needInit, "topologyChange", topologyChange)
-		if err := s.ensureNetworkEndpointGroups(); err != nil {
-			return fmt.Errorf("%w: %v", negtypes.ErrNegNotFound, err)
+
+		// Passing ensured NEGs forward from ensureNetworkEndpointGroups() if called during this sync as reading from statusHandler in the same sync might result in reading stale data.
+		ensuredSubnetZones, ensureErr = s.ensureNetworkEndpointGroups()
+		if ensureErr == nil {
+			s.needInit = false
+		} else {
+			// Resync will be triggered only after this iteration will complete syncing ensured NEGs.
+			ensureErr = fmt.Errorf("%w: %v", negtypes.ErrNegNotFound, ensureErr)
+			s.needInit = true
+
+			// if not a single NEG ensured - no need to continue resync
+			if len(ensuredSubnetZones) == 0 {
+				return ensureErr
+			}
 		}
-		s.needInit = false
+	} else {
+		var err error
+		ensuredSubnetZones, err = s.statusHandler.SubnetToZonesMap()
+		if err != nil {
+			return fmt.Errorf("failed to get subnet to zones map from status handler: %w", err)
+		}
 	}
 	s.logger.V(2).Info("Sync NEG", "negSyncerKey", s.NegSyncerKey.String(), "endpointsCalculatorMode", s.endpointsCalculator.Mode())
 
-	subnetConfigs := s.topologyProvider.ListSubnets(s.logger)
+	subnetConfigs := s.topologyProvider.ListSubnetsInDefaultNetwork(s.logger)
 	subnetToNegMapping, err := s.generateSubnetToNegNameMap(subnetConfigs)
 	if err != nil {
 		s.logger.Error(err, "failed to generate subnet to neg name mapping")
 		return err
 	}
 
-	currentMap, currentPodLabelMap, drainingEndpoints, err := retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, s.topologyProvider, s.cloud, s.NegSyncerKey.GetAPIVersion(), s.endpointsCalculator.Mode(), s.enableDualStackNEG, s.logger, s.negMetrics, needInitDrainStatus, s.NegSyncerKey.IncludeDrainNodesL4Local)
+	currentMap, currentPodLabelMap, drainingEndpoints, err := retrieveExistingZoneNetworkEndpointMap(subnetToNegMapping, s.topologyProvider, s.statusHandler, ensuredSubnetZones, s.cloud, s.NegSyncerKey.GetAPIVersion(), s.enableDualStackNEG, s.networkInfo, s.logger, s.negMetrics, needInitDrainStatus)
 	if err != nil {
 		return fmt.Errorf("%w: %w", negtypes.ErrCurrentNegEPNotFound, err)
 	}
@@ -364,6 +395,11 @@ func (s *transactionSyncer) syncInternalImpl() error {
 			s.logger.Info("Using normal mode endpoint calculation")
 		}
 	}
+
+	// Filter out locations without NEGs to prevent attaching endpoints in locations where is no NEG
+	targetMap = s.dropLocationsWithoutNEGs(targetMap, currentMap)
+	targetMap = s.cleanOldNEGs(targetMap)
+
 	// When the flags are not enabled, error state should be reset when no
 	// error occurs in the sync.
 	// notInDegraded and onlyInDegraded are not populated when the flags are
@@ -417,13 +453,16 @@ func (s *transactionSyncer) syncInternalImpl() error {
 	}
 
 	if len(addEndpoints) == 0 && len(removeEndpoints) == 0 {
-		s.logger.V(3).Info("No endpoint change. Skip syncing NEG. ", s.Namespace, s.Name)
-		return nil
+		s.logger.V(3).Info("No endpoint change. Skip syncing NEG.", s.Namespace, s.Name)
+		return ensureErr
 	}
+
 	s.logEndpoints(addEndpoints, "adding endpoint")
 	s.logEndpoints(removeEndpoints, "removing endpoint")
-
-	return s.syncNetworkEndpoints(addEndpoints, removeEndpoints, endpointPodLabelMap, migrationZone)
+	if syncErr := s.syncNetworkEndpoints(addEndpoints, removeEndpoints, endpointPodLabelMap, migrationZone); syncErr != nil {
+		return utilerrors.NewAggregate([]error{ensureErr, syncErr})
+	}
+	return ensureErr
 }
 
 // reAddDrainingEndpointsThatAreInTargetMap will make sure that endpoints that are draining
@@ -459,22 +498,21 @@ func (s *transactionSyncer) generateSubnetToNegNameMap(subnetConfigs []nodetopol
 	// neg naming which differs from how multi subnet cluster non default NEG names are
 	// handled.
 	if !s.networkInfo.IsDefault {
-		subnetToNegMapping[defaultSubnet] = s.NegSyncerKey.NegName
+		negName, err := s.getNEGName(defaultSubnet)
+		if err != nil {
+			return nil, err
+		}
+		subnetToNegMapping[defaultSubnet] = negName
 		return subnetToNegMapping, nil
 	}
 
 	for _, subnetConfig := range subnetConfigs {
-		// negs in default subnet have a different naming scheme from other subnets
-		if subnetConfig.Name == defaultSubnet {
-			subnetToNegMapping[defaultSubnet] = s.NegSyncerKey.NegName
-			continue
-		}
-		nonDefaultNegName, err := s.getNonDefaultSubnetNEGName(subnetConfig.Name)
+		negName, err := s.getNEGName(subnetConfig.Name)
 		if err != nil {
-			s.logger.Error(err, "Errored when getting NEG name from non-default subnets when retrieving existing endpoints")
+			s.logger.Error(err, "Errored when getting NEG name when retrieving existing endpoints", "subnet", subnetConfig.Name)
 			return nil, err
 		}
-		subnetToNegMapping[subnetConfig.Name] = nonDefaultNegName
+		subnetToNegMapping[subnetConfig.Name] = negName
 	}
 
 	return subnetToNegMapping, nil
@@ -524,24 +562,59 @@ func (s *transactionSyncer) candidateNodeFilter() zonegetter.Filter {
 	return negtypes.NodeFilterForEndpointCalculatorMode(s.EpCalculatorMode, s.NegSyncerKey.IncludeDrainNodesL4Local)
 }
 
-// ensureNetworkEndpointGroups ensures NEGs are created and configured correctly in the corresponding zones.
-func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
+// listTargetZonesPerSubnet lists all zones with candidate nodes and merges them with pre-provisioning zones.
+func (s *transactionSyncer) listTargetZonesPerSubnet() (shared.ZonesPerSubnetMap, error) {
 	// NEGs should be created in zones with candidate nodes only.
-	zonesPerSubnet, err := s.topologyProvider.ListZonesPerSubnet(s.candidateNodeFilter(), s.logger)
+	zonesPerSubnet, err := s.topologyProvider.ListZonesPerSubnet(s.candidateNodeFilter(), s.networkInfo, s.logger)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	// All zones to manage should be set in NEGBinding CR directly
+	if s.NegSyncerKey.IsBindingKey() {
+		return zonesPerSubnet, nil
+	}
+
+	if !flags.F.EnableNEGPreprovisioning {
+		return zonesPerSubnet, nil
+	}
+
+	// Read pre-provisioning zones from neg annotation of the service
+	service := getService(s.serviceLister, s.Namespace, s.Name, s.logger, s.negMetrics)
+	preprovisioningZones, preprovErr := negannotation.GetPreprovisioningZones(service, s.cloud)
+	if preprovErr != nil {
+		msg := "Ignore zone pre-provisioning annotation"
+		s.logger.Error(preprovErr, msg)
+		s.recordEvent(v1.EventTypeWarning, "IgnoreZonePreprovisioningAnnotation", fmt.Sprintf("%s err: %v", msg, preprovErr))
+	}
+
+	// Merge workload zones with pre-provisioning zones.
+	for subnetConfig, zones := range zonesPerSubnet {
+		zonesPerSubnet[subnetConfig] = zones.Insert(preprovisioningZones...)
+	}
+
+	return zonesPerSubnet, nil
+}
+
+// ensureNetworkEndpointGroups ensures NEGs are created and configured correctly in the corresponding zones.
+func (s *transactionSyncer) ensureNetworkEndpointGroups() (shared.ZonesPerSubnetMap, error) {
+
+	zonesPerSubnet, err := s.listTargetZonesPerSubnet()
+	if err != nil {
+		return nil, err
 	}
 
 	var errList []error
 	var negObjs []*composite.NetworkEndpointGroup
 	updateNEGStatus := true
 	negsByLocation := make(map[string]int)
+	ensuredSubnetZones := make(shared.ZonesPerSubnetMap)
 
 	// Get default subnet from syncer's networkInfo.
 	defaultSubnet, err := utils.KeyName(s.networkInfo.SubnetworkURL)
 	if err != nil {
 		s.logger.Error(err, "Errored getting default subnet from NetworkInfo when ensuring NEGs")
-		return err
+		return nil, err
 	}
 
 	var subnetConfigs []nodetopologyv1.SubnetConfig
@@ -551,7 +624,7 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 		// zoneGetter.
 
 		// List all existing subnets from the cluster.
-		subnetConfigs = s.topologyProvider.ListSubnets(s.logger)
+		subnetConfigs = s.topologyProvider.ListSubnetsInDefaultNetwork(s.logger)
 	} else {
 		// This is the multi-networking case where the VPC under consideration
 		// is not the default. Use the pre configured subnet from the
@@ -560,29 +633,43 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 
 		subnetConfig, err := nodetopology.SubnetConfigFromSubnetURL(s.networkInfo.SubnetworkURL)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		subnetConfigs = []nodetopologyv1.SubnetConfig{subnetConfig}
+	}
+
+	var expectedNEGDesc utils.NEGDescription
+	if s.NegSyncerKey.IsBindingKey() {
+		expectedNEGDesc = utils.BoundNEGDescription{
+			ClusterName: flags.F.GKEClusterName,
+			Namespace:   s.Namespace,
+			BackendRef:  s.NegSyncerKey.Name,
+		}
+	} else {
+		expectedNEGDesc = utils.StandardNEGDescription{
+			ClusterUID:  s.kubeSystemUID,
+			Namespace:   s.Namespace,
+			ServiceName: s.Name,
+			Port:        fmt.Sprint(s.NegSyncerKey.PortTuple.Port),
+		}
 	}
 
 	for _, subnetConfig := range subnetConfigs {
 		zones, ok := zonesPerSubnet[subnetConfig.Name]
 		if !ok {
-			// s.topologyProvider.ListSubnets and s.topologyProvider.ListZonesPerSubnet should return same set of subnets.
+			// s.topologyProvider.ListSubnetsInDefaultNetwork and s.topologyProvider.ListZonesPerSubnet should return same set of subnets for Multi-Subnet.
 			// Therefore this condition should be true only for multi-networking where we don't want NEGs in default subnet
 			continue
 		}
-		negName := s.NegSyncerKey.NegName
+		negName, err := s.getNEGName(subnetConfig.Name)
+		if err != nil {
+			s.logger.Error(err, "Unable to get the name of the NEG based on the subnet name", "subnetName", subnetConfig.Name)
+			errList = append(errList, err)
+			continue
+		}
 		networkInfo := s.networkInfo
 
 		if subnetConfig.Name != defaultSubnet {
-			// Determine the NEG name for the non-default subnet NEGs.
-			negName, err = s.getNonDefaultSubnetNEGName(subnetConfig.Name)
-			if err != nil {
-				s.logger.Error(err, "Unable to get the name of the additional NEG based on the subnet name", "subnetName", subnetConfig.Name)
-				errList = append(errList, err)
-				continue
-			}
 
 			// Determine the networkInfo for the non-default subnet NEGs.
 			resourceID, err := cloud.ParseResourceURL(subnetConfig.SubnetPath)
@@ -603,14 +690,14 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 				negName,
 				zone,
 				s.NegSyncerKey.String(),
-				s.kubeSystemUID,
-				fmt.Sprint(s.NegSyncerKey.PortTuple.Port),
+				expectedNEGDesc,
 				s.NegSyncerKey.NegType,
 				s.cloud,
 				s.serviceLister,
 				s.recorder,
 				s.NegSyncerKey.GetAPIVersion(),
 				s.customName,
+				s.manageLifecycle,
 				networkInfo,
 				s.logger,
 				s.negMetrics,
@@ -628,9 +715,17 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 			if err == nil {
 				negObjs = append(negObjs, negObj)
 				negsByLocation[zone]++
+				if _, ok := ensuredSubnetZones[subnetConfig.Name]; !ok {
+					ensuredSubnetZones[subnetConfig.Name] = sets.New[string]()
+				}
+				ensuredSubnetZones[subnetConfig.Name].Insert(zone)
 			}
 		}
 	}
+
+	oldNegs, oldNegErrs := s.getNEGsToKeepInStatus(ensuredSubnetZones)
+	negObjs = append(negObjs, oldNegs...)
+	errList = append(errList, oldNegErrs...)
 
 	if updateNEGStatus {
 		if err := s.statusHandler.ReportStatus(negObjs, errList); err != nil {
@@ -639,7 +734,7 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 	}
 
 	s.syncMetricsCollector.UpdateSyncerNegCount(s.NegSyncerKey, negsByLocation)
-	return utilerrors.NewAggregate(errList)
+	return ensuredSubnetZones, utilerrors.NewAggregate(errList)
 }
 
 // syncNetworkEndpoints spins off go routines to execute NEG operations
@@ -729,26 +824,10 @@ func (s *transactionSyncer) operationInternal(operation transactionOp, negLocati
 		networkEndpoints = append(networkEndpoints, ne)
 	}
 	zone := negLocation.Zone
-	negName := s.NegSyncerKey.NegName
-	if flags.F.EnableMultiSubnetClusterPhase1 {
-		defaultSubnet, err := utils.KeyName(s.networkInfo.SubnetworkURL)
-		if err != nil {
-			s.logger.Error(err, "Errored getting default subnet from NetworkInfo when updating NEG endpoints")
-			return err
-		}
-
-		// In the case where this is the default network of the cluster
-		// (s.networkInfo.IsDefault) but the subnet of the NEG
-		// (epGroupInfo.Subnet) is not the defaultSubnet, we are dealing with
-		// the Multi-Subnet Cluster use case, wherein the name of the NEG would
-		// need to be different.
-		if s.networkInfo.IsDefault && negLocation.Subnet != defaultSubnet {
-			negName, err = s.getNonDefaultSubnetNEGName(negLocation.Subnet)
-			if err != nil {
-				s.logger.Error(err, "Errored getting non-default subnet NEG name when updating NEG endpoints")
-				return err
-			}
-		}
+	negName, err := s.getNEGName(negLocation.Subnet)
+	if err != nil {
+		s.logger.Error(err, "Errored getting NEG name when updating NEG endpoints", "subnet", negLocation.Subnet)
+		return err
 	}
 	if operation == attachOp {
 		err = s.cloud.AttachNetworkEndpoints(negName, zone, networkEndpoints, s.NegSyncerKey.GetAPIVersion(), logger)
@@ -880,25 +959,13 @@ func (s *transactionSyncer) commitPods(endpointMap map[negtypes.NEGLocation]negt
 			}
 			zoneEndpointMap[endpoint] = podName
 		}
-		negName := s.NegSyncerKey.NegName
-		syncerKey := s.NegSyncerKey
-		if flags.F.EnableMultiSubnetClusterPhase1 {
-			defaultSubnet, err := utils.KeyName(s.networkInfo.SubnetworkURL)
-			if err != nil {
-				s.logger.Error(err, "Errored getting default subnet from NetworkInfo when committing pods")
-				continue
-			}
-
-			if negLocation.Subnet != defaultSubnet {
-				negName, err = s.getNonDefaultSubnetNEGName(negLocation.Subnet)
-				if err != nil {
-					s.logger.Error(err, "Errored getting non-default subnet NEG name when committing pods")
-					continue
-				}
-			}
-			// To ensure syncerKey has the same information as the passed in NEG name.
-			syncerKey.NegName = negName
+		negName, err := s.getNEGName(negLocation.Subnet)
+		if err != nil {
+			s.logger.Error(err, "Errored getting NEG name when committing pods", "subnet", negLocation.Subnet)
+			continue
 		}
+		syncerKey := s.NegSyncerKey
+		syncerKey.NegName = negName
 		s.reflector.CommitPods(syncerKey, negName, negLocation.Zone, zoneEndpointMap)
 	}
 }
@@ -913,7 +980,7 @@ func (s *transactionSyncer) isTopologyChange() bool {
 		return false
 	}
 
-	wantSubnetZones, err := s.topologyProvider.ListZonesPerSubnet(s.candidateNodeFilter(), s.logger)
+	wantSubnetZones, err := s.listTargetZonesPerSubnet()
 	if err != nil {
 		s.logger.Error(err, "unable to list zones")
 		s.negMetrics.PublishNegControllerErrorCountMetrics(err, true)
@@ -921,6 +988,41 @@ func (s *transactionSyncer) isTopologyChange() bool {
 	}
 
 	return !wantSubnetZones.Equal(existingSubnetZones)
+}
+
+// dropLocationsWithoutNEGs excludes locations from targetMap that do not exist in currentMap.
+func (s *transactionSyncer) dropLocationsWithoutNEGs(targetMap, currentMap map[negtypes.NEGLocation]negtypes.NetworkEndpointSet) map[negtypes.NEGLocation]negtypes.NetworkEndpointSet {
+	filteredMap := make(map[negtypes.NEGLocation]negtypes.NetworkEndpointSet, len(targetMap))
+	for loc, endpoints := range targetMap {
+		if _, ok := currentMap[loc]; ok {
+			filteredMap[loc] = endpoints
+		} else {
+			s.logger.Info("Excluding target endpoints for location as there is no NEG", "location", loc)
+		}
+	}
+	return filteredMap
+}
+
+// cleanOldNEGs filters the targetMap and forces 0 desired endpoints for locations
+// that are no longer desired (i.e. not in the spec or not owned due to conflict).
+func (s *transactionSyncer) cleanOldNEGs(targetMap map[negtypes.NEGLocation]negtypes.NetworkEndpointSet) map[negtypes.NEGLocation]negtypes.NetworkEndpointSet {
+	desiredZones, err := s.listTargetZonesPerSubnet()
+	if err != nil {
+		s.logger.Error(err, "Failed to list target zones per subnet, skipping cleanOldNEGs")
+		return targetMap
+	}
+
+	resultMap := make(map[negtypes.NEGLocation]negtypes.NetworkEndpointSet, len(targetMap))
+	for loc, endpoints := range targetMap {
+		zones, ok := desiredZones[loc.Subnet]
+		if ok && zones.Has(loc.Zone) {
+			resultMap[loc] = endpoints
+		} else {
+			s.logger.Info("Location is not desired, forcing empty endpoints to trigger drain", "location", loc)
+			resultMap[loc] = negtypes.NewNetworkEndpointSet()
+		}
+	}
+	return resultMap
 }
 
 // filterEndpointByTransaction removes the all endpoints from endpoint map if they exists in the transaction table
@@ -1027,6 +1129,31 @@ func (s *transactionSyncer) computeEPSStaleness(endpointSlices []*discovery.Endp
 	}
 }
 
+// getNEGName returns the name of the NEG for the given subnet.
+func (s *transactionSyncer) getNEGName(subnet string) (string, error) {
+	// NEG name for binding syncer should be get from namer only, as there might not be name for default network
+	// or it can be changed during the syncer lifecycle.
+	if s.NegSyncerKey.IsBindingKey() {
+		return s.getNonDefaultSubnetNEGName(subnet)
+	}
+
+	// For multi-net or in case multi-subnet is disabled - default NEG name used (as there is only single subnet then, therefore no need for multiple NEG names)
+	if !flags.F.EnableMultiSubnetClusterPhase1 || !s.networkInfo.IsDefault {
+		return s.NegSyncerKey.NegName, nil
+	}
+
+	defaultSubnet, err := utils.KeyName(s.networkInfo.SubnetworkURL)
+	if err != nil {
+		return "", err
+	}
+
+	// For non-binding syncer namer used for non-default subnet only; NEG name for default is stored in syncer key
+	if subnet != defaultSubnet {
+		return s.getNonDefaultSubnetNEGName(subnet)
+	}
+	return s.NegSyncerKey.NegName, nil
+}
+
 // getNonDefaultSubnetNEGName returns the name of the NEG based on the subnet name.
 func (s *transactionSyncer) getNonDefaultSubnetNEGName(subnet string) (string, error) {
 	if s.customName {
@@ -1108,4 +1235,101 @@ func collectLabelStats(currentPodLabelMap, addPodLabelMap labels.EndpointPodLabe
 		}
 	}
 	return labelPropagationStats
+}
+
+// getNEGsToKeepInStatus returns a list of NEGs that should be kept in status even though are not in target topology.
+// Mainly used to keep track of NEGs which are currently cleaned up as part of NEGBinding flow.
+func (s *transactionSyncer) getNEGsToKeepInStatus(ensuredSubnetZones shared.ZonesPerSubnetMap) ([]*composite.NetworkEndpointGroup, []error) {
+	var negObjs []*composite.NetworkEndpointGroup
+	var errList []error
+
+	if !s.NegSyncerKey.IsBindingKey() {
+		return nil, nil
+	}
+
+	existingZones, err := s.statusHandler.SubnetToZonesMap()
+	if err != nil {
+		s.logger.Error(err, "Failed to get subnet to zones map from status handler")
+		return nil, []error{err}
+	}
+
+	for subnet, zones := range existingZones {
+		for zone := range zones {
+			// Still desired NEG - will be left in status by standard flow
+			if desiredZones, ok := ensuredSubnetZones[subnet]; ok && desiredZones.Has(zone) {
+				continue
+			}
+
+			negName, err := s.getNEGName(subnet)
+			if err != nil {
+				s.logger.Error(err, "Failed to get NEG name for subnet", "subnet", subnet)
+				errList = append(errList, err)
+				continue
+			}
+
+			hasOngoingTransactions := s.hasTransactions(subnet, zone)
+			hasEndpoints, err := s.hasEndpoints(negName, zone)
+			if err != nil {
+				s.logger.Error(err, "Failed to check if NEG has endpoints", "neg", negName, "zone", zone)
+				errList = append(errList, err)
+				hasEndpoints = true // Keep in status to be safe on error
+			}
+
+			// NEG not cleaned up - should be preserved in status if still exists (if not - it's treated as cleaned up)
+			if hasOngoingTransactions || hasEndpoints {
+				s.logger.Info("Including old NEG in status as it still has endpoints or pending transactions", "neg", negName, "zone", zone, "hasEndpoints", hasEndpoints, "hasTransactions", hasOngoingTransactions)
+				negObj, err := s.cloud.GetNetworkEndpointGroup(negName, zone, s.NegSyncerKey.GetAPIVersion(), s.logger)
+				if err != nil {
+					if utils.IsNotFoundError(err) {
+						s.logger.Info("Previously managed NEG not found in GCE, treating as cleaned up", "neg", negName, "zone", zone)
+						continue
+					}
+					s.logger.Error(err, "Failed to retrieve previously managed NEG from GCE", "neg", negName, "zone", zone)
+					errList = append(errList, err)
+
+					// Try to still preserve NEG in case of error (if not 404)
+					resourceID, parseErr := cloud.ParseResourceURL(s.networkInfo.SubnetworkURL)
+					if parseErr != nil {
+						s.logger.Error(parseErr, "Failed to parse subnetwork URL when constructing fallback NEG descriptor", "subnetURL", s.networkInfo.SubnetworkURL)
+						continue
+					}
+					s.logger.Info("Preserving previously managed NEG in status after retrieval error", "neg", negName, "zone", zone)
+					negObj = &composite.NetworkEndpointGroup{
+						Name:       negName,
+						Zone:       zone,
+						SelfLink:   cloud.SelfLink(s.NegSyncerKey.GetAPIVersion(), resourceID.ProjectID, "networkEndpointGroups", meta.ZonalKey(negName, zone)),
+						Subnetwork: s.networkInfo.SubnetworkURL,
+					}
+				}
+				negObjs = append(negObjs, negObj)
+			} else {
+				s.logger.Info("Excluding previously managed NEG from status as it has no endpoints and no pending transactions", "neg", negName, "zone", zone)
+			}
+		}
+	}
+	return negObjs, errList
+}
+
+// hasEndpoints returns true if the NEG has any endpoints attached in GCE.
+func (s *transactionSyncer) hasEndpoints(negName, zone string) (bool, error) {
+	endpoints, err := s.cloud.ListNetworkEndpoints(negName, zone, false, s.NegSyncerKey.GetAPIVersion(), s.logger)
+	if err != nil {
+		if utils.IsNotFoundError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return len(endpoints) > 0, nil
+}
+
+// hasTransactions returns true if there are any pending transactions (attach/detach) for the given subnet and zone.
+func (s *transactionSyncer) hasTransactions(subnet, zone string) bool {
+	for _, key := range s.transactions.Keys() {
+		if entry, ok := s.transactions.Get(key); ok {
+			if entry.Subnet == subnet && entry.Zone == zone {
+				return true
+			}
+		}
+	}
+	return false
 }

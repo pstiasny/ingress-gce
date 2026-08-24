@@ -1,6 +1,7 @@
 package filteredinformer
 
 import (
+	"reflect"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -15,6 +16,7 @@ func TestProviderConfigFilteredCache_ByIndex(t *testing.T) {
 	testCases := []struct {
 		desc                string
 		cacheProviderConfig string
+		allowMissing        bool
 		objectsInCache      []interface{}
 		queryName           string
 		expectedItemNames   []string
@@ -22,6 +24,7 @@ func TestProviderConfigFilteredCache_ByIndex(t *testing.T) {
 		{
 			desc:                "Retrieve items by index in provider config",
 			cacheProviderConfig: "cs123456-abc",
+			allowMissing:        false,
 			objectsInCache: []interface{}{
 				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "cs123456-abc"}, Namespace: "cs123456-abc-namespace", Name: "obj1"},
 				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "cs123456-abc"}, Namespace: "cs123456-abc-namespace", Name: "obj2"},
@@ -31,8 +34,21 @@ func TestProviderConfigFilteredCache_ByIndex(t *testing.T) {
 			expectedItemNames: []string{"obj1"},
 		},
 		{
+			desc:                "Retrieve items by index, allowing missing",
+			cacheProviderConfig: "cs123456-abc",
+			allowMissing:        true,
+			objectsInCache: []interface{}{
+				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "cs123456-abc"}, Namespace: "ns1", Name: "obj1"},
+				&v1.ObjectMeta{Name: "obj1"}, // missing label
+				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "cs654321-edf"}, Namespace: "ns2", Name: "obj1"}, // wrong label
+			},
+			queryName:         "obj1",
+			expectedItemNames: []string{"obj1", "obj1"},
+		},
+		{
 			desc:                "No items when index key does not match",
 			cacheProviderConfig: "cs123456-abc",
+			allowMissing:        false,
 			objectsInCache: []interface{}{
 				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "cs123456-abc"}, Name: "obj1"},
 			},
@@ -56,6 +72,7 @@ func TestProviderConfigFilteredCache_ByIndex(t *testing.T) {
 			nsCache := &providerConfigFilteredCache{
 				Indexer:            indexer,
 				providerConfigName: tc.cacheProviderConfig,
+				allowMissing:       tc.allowMissing,
 			}
 
 			for _, obj := range tc.objectsInCache {
@@ -66,15 +83,17 @@ func TestProviderConfigFilteredCache_ByIndex(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
-			if len(items) != len(tc.expectedItemNames) {
-				t.Errorf("Expected %d items, got %d", len(tc.expectedItemNames), len(items))
+			expectedCounts := make(map[string]int)
+			for _, name := range tc.expectedItemNames {
+				expectedCounts[name]++
 			}
-
-			for i, item := range items {
+			actualCounts := make(map[string]int)
+			for _, item := range items {
 				metaObj, _ := meta.Accessor(item)
-				if metaObj.GetName() != tc.expectedItemNames[i] {
-					t.Errorf("Expected item name %s, got %s", tc.expectedItemNames[i], metaObj.GetName())
-				}
+				actualCounts[metaObj.GetName()]++
+			}
+			if !reflect.DeepEqual(expectedCounts, actualCounts) {
+				t.Errorf("Expected item counts %v, got %v", expectedCounts, actualCounts)
 			}
 		})
 	}
@@ -86,12 +105,14 @@ func TestProviderConfigFilteredCache_List(t *testing.T) {
 	testCases := []struct {
 		desc                string
 		cacheProviderConfig string
+		allowMissing        bool
 		objectsInCache      []interface{}
 		expectedItemNames   []string
 	}{
 		{
 			desc:                "List items in the provider config",
 			cacheProviderConfig: "p123456-abc",
+			allowMissing:        false,
 			objectsInCache: []interface{}{
 				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "p123456-abc"}, Name: "obj1"},
 				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "p654321-edf"}, Name: "obj2"},
@@ -101,10 +122,22 @@ func TestProviderConfigFilteredCache_List(t *testing.T) {
 		{
 			desc:                "List no items when provider config has no objects",
 			cacheProviderConfig: "p123456-abc",
+			allowMissing:        false,
 			objectsInCache: []interface{}{
 				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "p654321-edf"}, Name: "obj1"},
 			},
 			expectedItemNames: []string{},
+		},
+		{
+			desc:                "List items, allowing missing",
+			cacheProviderConfig: "p123456-abc",
+			allowMissing:        true,
+			objectsInCache: []interface{}{
+				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "p123456-abc"}, Name: "obj1"},
+				&v1.ObjectMeta{Labels: map[string]string{flags.F.ProviderConfigNameLabelKey: "p654321-edf"}, Name: "obj2"},
+				&v1.ObjectMeta{Name: "obj3"},
+			},
+			expectedItemNames: []string{"obj1", "obj3"},
 		},
 	}
 
@@ -115,6 +148,7 @@ func TestProviderConfigFilteredCache_List(t *testing.T) {
 			nsCache := &providerConfigFilteredCache{
 				Indexer:            indexer,
 				providerConfigName: tc.cacheProviderConfig,
+				allowMissing:       tc.allowMissing,
 			}
 
 			for _, obj := range tc.objectsInCache {
@@ -122,15 +156,17 @@ func TestProviderConfigFilteredCache_List(t *testing.T) {
 			}
 
 			items := nsCache.List()
-			if len(items) != len(tc.expectedItemNames) {
-				t.Errorf("Expected %d items, got %d", len(tc.expectedItemNames), len(items))
+			expectedCounts := make(map[string]int)
+			for _, name := range tc.expectedItemNames {
+				expectedCounts[name]++
 			}
-
-			for i, item := range items {
+			actualCounts := make(map[string]int)
+			for _, item := range items {
 				metaObj, _ := meta.Accessor(item)
-				if metaObj.GetName() != tc.expectedItemNames[i] {
-					t.Errorf("Expected item name %s, got %s", tc.expectedItemNames[i], metaObj.GetName())
-				}
+				actualCounts[metaObj.GetName()]++
+			}
+			if !reflect.DeepEqual(expectedCounts, actualCounts) {
+				t.Errorf("Expected item counts %v, got %v", expectedCounts, actualCounts)
 			}
 		})
 	}
@@ -142,6 +178,7 @@ func TestProviderConfigFilteredCache_GetByKey(t *testing.T) {
 	testCases := []struct {
 		desc                string
 		cacheProviderConfig string
+		allowMissing        bool
 		queryKey            string
 		objectsInCache      []interface{}
 		expectedExist       bool
@@ -150,6 +187,7 @@ func TestProviderConfigFilteredCache_GetByKey(t *testing.T) {
 		{
 			desc:                "Get existing item by key in provider config",
 			cacheProviderConfig: "p123456-abc",
+			allowMissing:        false,
 			queryKey:            "p123456-abc-namespace/obj1",
 			objectsInCache: []interface{}{&v1.ObjectMeta{
 				Labels:    map[string]string{flags.F.ProviderConfigNameLabelKey: "p123456-abc"},
@@ -160,8 +198,32 @@ func TestProviderConfigFilteredCache_GetByKey(t *testing.T) {
 			expectedName:  "obj1",
 		},
 		{
+			desc:                "Get missing item by key when allowMissing is true",
+			cacheProviderConfig: "p123456-abc",
+			allowMissing:        true,
+			queryKey:            "default/obj1",
+			objectsInCache: []interface{}{&v1.ObjectMeta{
+				Namespace: "default",
+				Name:      "obj1",
+			}},
+			expectedExist: true,
+			expectedName:  "obj1",
+		},
+		{
+			desc:                "Get missing item by key when allowMissing is false",
+			cacheProviderConfig: "p123456-abc",
+			allowMissing:        false,
+			queryKey:            "default/obj1",
+			objectsInCache: []interface{}{&v1.ObjectMeta{
+				Namespace: "default",
+				Name:      "obj1",
+			}},
+			expectedExist: false,
+		},
+		{
 			desc:                "Item exists but in different provider config",
 			cacheProviderConfig: "p123456-abc",
+			allowMissing:        false,
 			queryKey:            "p654321-edf-namespace/obj1",
 			objectsInCache: []interface{}{&v1.ObjectMeta{
 				Labels:    map[string]string{flags.F.ProviderConfigNameLabelKey: "p654321-edf"},
@@ -173,6 +235,7 @@ func TestProviderConfigFilteredCache_GetByKey(t *testing.T) {
 		{
 			desc:                "Item does not exist",
 			cacheProviderConfig: "p123456-abc",
+			allowMissing:        false,
 			objectsInCache: []interface{}{&v1.ObjectMeta{
 				Labels:    map[string]string{flags.F.ProviderConfigNameLabelKey: "p123456-abc"},
 				Namespace: "p123456-abc-namespace",
@@ -190,6 +253,7 @@ func TestProviderConfigFilteredCache_GetByKey(t *testing.T) {
 			nsCache := &providerConfigFilteredCache{
 				Indexer:            indexer,
 				providerConfigName: tc.cacheProviderConfig,
+				allowMissing:       tc.allowMissing,
 			}
 
 			for _, obj := range tc.objectsInCache {

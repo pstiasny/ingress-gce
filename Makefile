@@ -31,8 +31,6 @@ CONTAINER_BINARIES ?= \
 	psc-e2e-test \
 	neg-e2e-test \
 	ingress-controller-e2e-test \
-	workload-controller \
-	workload-daemon \
 	check-gke-ingress
 
 # Latest commit hash for current branch.
@@ -46,7 +44,7 @@ OS ?= linux
 ALL_ARCH := amd64
 
 # Image to use for building.
-BUILD_IMAGE ?= golang:1.26.4
+BUILD_IMAGE ?= golang:1.26.6
 # Containers will be named: $(CONTAINER_PREFIX)-$(BINARY)-$(ARCH):$(VERSION).
 CONTAINER_PREFIX ?= ingress-gce
 

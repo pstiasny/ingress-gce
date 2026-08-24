@@ -45,6 +45,8 @@ import (
 	l4lbconfigclient "k8s.io/ingress-gce/pkg/l4lbconfig/client/clientset/versioned"
 	multiprojectgce "k8s.io/ingress-gce/pkg/multiproject/common/gce"
 	multiprojectstart "k8s.io/ingress-gce/pkg/multiproject/start"
+	"k8s.io/ingress-gce/pkg/negbinding"
+	negbindingclient "k8s.io/ingress-gce/pkg/negbinding/client/clientset/versioned"
 	"k8s.io/ingress-gce/pkg/network"
 	providerconfigclient "k8s.io/ingress-gce/pkg/providerconfig/client/clientset/versioned"
 	"k8s.io/ingress-gce/pkg/psc"
@@ -170,10 +172,25 @@ func main() {
 		if _, err := crdHandler.EnsureCRD(negCRDMeta, true); err != nil {
 			klog.Fatalf("Failed to ensure ServiceNetworkEndpointGroup CRD: %v", err)
 		}
+
+		if flags.F.EnableNEGBinding {
+			negBindingCRDMeta := negbinding.CRDMeta()
+			if _, err := crdHandler.EnsureCRD(negBindingCRDMeta, true); err != nil {
+				klog.Fatalf("Failed to ensure NetworkEndpointGroupBinding CRD: %v", err)
+			}
+		}
 	}
 	svcNegClient, err := svcnegclient.NewForConfig(kubeConfig)
 	if err != nil {
 		klog.Fatalf("Failed to create NetworkEndpointGroup client: %v", err)
+	}
+
+	var negBindingClient negbindingclient.Interface
+	if flags.F.EnableNEGBinding {
+		negBindingClient, err = negbindingclient.NewForConfig(kubeConfig)
+		if err != nil {
+			klog.Fatalf("Failed to create NetworkEndpointGroupBinding client: %v", err)
+		}
 	}
 
 	var svcAttachmentClient serviceattachmentclient.Interface
@@ -278,6 +295,7 @@ func main() {
 					rootLogger,
 					kubeClient,
 					svcNegClient,
+					negBindingClient,
 					networkClient,
 					nodeTopologyClient,
 					kubeSystemUID,
@@ -297,6 +315,7 @@ func main() {
 					rootLogger,
 					kubeClient,
 					svcNegClient,
+					negBindingClient,
 					networkClient,
 					nodeTopologyClient,
 					kubeSystemUID,
@@ -340,6 +359,7 @@ func main() {
 		MaxIGSize:                            flags.F.MaxIGSize,
 		RunL4ILBController:                   flags.F.RunL4Controller,
 		RunL4NetLBController:                 flags.F.RunL4NetLBController,
+		RunL4StandaloneNEGController:         flags.F.RunL4StandaloneNEGController,
 		EnableL4ILBDualStack:                 flags.F.EnableL4ILBDualStack,
 		EnableL4NetLBDualStack:               flags.F.EnableL4NetLBDualStack,
 		EnableL4StrongSessionAffinity:        flags.F.EnableL4StrongSessionAffinity,
@@ -359,7 +379,7 @@ func main() {
 		ReadOnlyMode:                         flags.F.ReadOnlyMode,
 		EnableL4NetLBRBSByDefault:            flags.F.EnableL4NetLBRBSByDefault,
 	}
-	ctx, err := ingctx.NewControllerContext(kubeClient, backendConfigClient, frontendConfigClient, firewallCRClient, svcNegClient, svcAttachmentClient, networkClient, nodeTopologyClient, l4LBConfigClient, eventRecorderKubeClient, cloud, namer, kubeSystemUID, ctxConfig, rootLogger)
+	ctx, err := ingctx.NewControllerContext(kubeClient, backendConfigClient, frontendConfigClient, firewallCRClient, svcNegClient, negBindingClient, svcAttachmentClient, networkClient, nodeTopologyClient, l4LBConfigClient, eventRecorderKubeClient, cloud, namer, kubeSystemUID, ctxConfig, rootLogger)
 	if err != nil {
 		klog.Fatalf("unable to set up controller context: %v", err)
 	}
@@ -371,7 +391,7 @@ func main() {
 		id: fmt.Sprintf("%v_%x", hostname, rand.Intn(1e6)),
 	}
 
-	enableL4Controllers := flags.F.RunL4Controller || flags.F.RunL4NetLBController || flags.F.EnableIGController || flags.F.EnablePSC
+	enableL4Controllers := flags.F.RunL4Controller || flags.F.RunL4NetLBController || flags.F.EnableIGController || flags.F.EnablePSC || flags.F.RunL4StandaloneNEGController
 	runNEG := func() {
 		logger := rootLogger.WithName("NEGController")
 		logger.Info("Start running the enabled controllers",
@@ -395,6 +415,7 @@ func main() {
 		logger.Info("Start running the enabled controllers",
 			"L4 controller", flags.F.RunL4Controller,
 			"L4 NetLB controller", flags.F.RunL4NetLBController,
+			"L4 Standalone NEG LB controller", flags.F.RunL4StandaloneNEGController,
 			"InstanceGroup controller", flags.F.EnableIGController,
 			"PSC controller", flags.F.EnablePSC,
 		)
@@ -445,6 +466,7 @@ func main() {
 			logger.Info("Start running L4 leader election",
 				"L4 controller", flags.F.RunL4Controller,
 				"L4 NetLB controller", flags.F.RunL4NetLBController,
+				"L4 Standalone NEG LB controller", flags.F.RunL4StandaloneNEGController,
 				"InstanceGroup controller", flags.F.EnableIGController,
 				"PSC controller", flags.F.EnablePSC,
 			)
@@ -619,7 +641,7 @@ func runIngressControllers(ctx *ingctx.ControllerContext, systemHealth *systemhe
 }
 
 func runL4Controllers(ctx *ingctx.ControllerContext, systemHealth *systemhealth.SystemHealth, option runOption, leOption leaderElectionOption, logger klog.Logger) {
-	if !flags.F.RunL4Controller && !flags.F.EnablePSC && !flags.F.EnableIGController && !flags.F.RunL4NetLBController {
+	if !flags.F.RunL4Controller && !flags.F.EnablePSC && !flags.F.EnableIGController && !flags.F.RunL4NetLBController && !flags.F.RunL4StandaloneNEGController {
 		return
 	}
 
@@ -663,7 +685,7 @@ func runL4Controllers(ctx *ingctx.ControllerContext, systemHealth *systemhealth.
 		logger.V(0).Info("L4NetLB controller started")
 	}
 
-	if flags.F.RunL4StandaloneNEGLBController {
+	if flags.F.RunL4StandaloneNEGController {
 		standaloneNEGLBController := controllers.NewStandaloneNEGLBController(ctx, option.stopCh, logger)
 		runWithWg(standaloneNEGLBController.Run, option.wg)
 		logger.V(0).Info("L4 Standalone NEG LB controller started")
@@ -730,6 +752,7 @@ func createNEGController(ctx *ingctx.ControllerContext, systemHealth *systemheal
 	negController, err := neg.NewController(
 		ctx.KubeClient,
 		ctx.SvcNegClient,
+		ctx.NEGBindingClient,
 		ctx.EventRecorderClient,
 		ctx.KubeSystemUID,
 		ctx.IngressInformer,
@@ -738,6 +761,7 @@ func createNEGController(ctx *ingctx.ControllerContext, systemHealth *systemheal
 		ctx.NodeInformer,
 		ctx.EndpointSliceInformer,
 		ctx.SvcNegInformer,
+		ctx.NEGBindingInformer,
 		ctx.NetworkInformer,
 		ctx.GKENetworkParamsInformer,
 		ctx.NodeTopologyInformer,
@@ -760,6 +784,7 @@ func createNEGController(ctx *ingctx.ControllerContext, systemHealth *systemheal
 		flags.F.EnableL4NetLBNEG,
 		flags.F.ReadOnlyMode,
 		flags.F.EnableNEGsForIngress,
+		flags.F.EnableNEGBinding,
 		flags.F.EnableL4NEGLocalIncludeDrainNodes,
 		stopCh,
 		logger,
